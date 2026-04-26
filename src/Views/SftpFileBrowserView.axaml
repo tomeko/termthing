@@ -58,6 +58,8 @@
                     <MenuItem x:Name="MenuDownloadTo" Header="Download to ▶"/>
                     <MenuItem x:Name="MenuDelete"     Header="Delete"        Click="OnMenuDeleteClicked"/>
                     <Separator/>
+                    <MenuItem x:Name="MenuProperties" Header="Properties"    Click="OnMenuPropertiesClicked"/>
+                    <Separator/>
                     <MenuItem Header="Refresh" Click="OnRefreshClicked"/>
                 </ContextMenu>
             </DataGrid.ContextMenu>

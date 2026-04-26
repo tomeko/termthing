@@ -1,0 +1,47 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.FolderPropertiesDialog"
+        Width="360"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        SizeToContent="Height">
+    <Grid Margin="16" RowDefinitions="Auto,10,Auto,Auto,16,Auto">
+
+        <!-- Path -->
+        <TextBlock x:Name="FolderPathText" Grid.Row="0"
+                   TextWrapping="Wrap" FontSize="11" Foreground="#aaaaaa"/>
+
+        <Separator Grid.Row="1" Margin="0,0"/>
+
+        <!-- Stats grid -->
+        <Grid Grid.Row="2" ColumnDefinitions="90,*" RowDefinitions="Auto,6,Auto" Margin="0,0,0,4">
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Total size:" VerticalAlignment="Center" FontSize="12"/>
+            <Panel Grid.Row="0" Grid.Column="1">
+                <ProgressBar x:Name="SizeProgress" IsIndeterminate="True" Height="4"
+                             VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock x:Name="SizeText" VerticalAlignment="Center" FontSize="12"
+                           IsVisible="False"/>
+            </Panel>
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Files:" VerticalAlignment="Center" FontSize="12"/>
+            <Panel Grid.Row="2" Grid.Column="1">
+                <ProgressBar x:Name="FileCountProgress" IsIndeterminate="True" Height="4"
+                             VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock x:Name="FileCountText" VerticalAlignment="Center" FontSize="12"
+                           IsVisible="False"/>
+            </Panel>
+        </Grid>
+
+        <!-- Error message (hidden by default) -->
+        <TextBlock x:Name="ErrorText" Grid.Row="3"
+                   Foreground="OrangeRed" FontSize="11"
+                   TextWrapping="Wrap" IsVisible="False"/>
+
+        <!-- Close button -->
+        <Button Grid.Row="5" Content="Close"
+                HorizontalAlignment="Right"
+                Padding="16,4"
+                IsDefault="True" IsCancel="True"
+                Click="OnCloseClicked"/>
+    </Grid>
+</Window>

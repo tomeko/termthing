@@ -266,7 +266,7 @@ internal sealed class SshSessionInstance : ISessionInstance
 
         if (sftpClient != null)
         {
-            _sftpView = new SftpFileBrowserView(sftpClient);
+            _sftpView = new SftpFileBrowserView(sftpClient, client);
 
             // Navigate to home directory once the SFTP handshake completes.
             // sftpConnectTask may already be completed (synchronous path) or still

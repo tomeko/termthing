@@ -69,6 +69,7 @@ public partial class SftpFileBrowserView : UserControl
 {
     private readonly SftpClient _sftpClient;
     private readonly TransferQueue _transferQueue;
+    private SshClient? _sshClient;
     private string _currentPath = "/";
     private bool _navigating;
 
@@ -83,6 +84,7 @@ public partial class SftpFileBrowserView : UserControl
     private MenuItem _menuOpen = null!;
     private MenuItem _menuDownloadTo = null!;
     private MenuItem _menuDelete = null!;
+    private MenuItem _menuProperties = null!;
     private TransferProgressOverlay _transferOverlay = null!;
 
     // Drag-out state — removed: Avalonia DoDragDrop requires a live pointer event,
@@ -97,9 +99,10 @@ public partial class SftpFileBrowserView : UserControl
     public string CurrentPath => _currentPath;
     public bool FollowLocation => _followLocationCheckBox?.IsChecked == true;
 
-    public SftpFileBrowserView(SftpClient sftpClient)
+    public SftpFileBrowserView(SftpClient sftpClient, SshClient? sshClient = null)
     {
         _sftpClient = sftpClient ?? throw new ArgumentNullException(nameof(sftpClient));
+        _sshClient  = sshClient;
         InitializeComponent();
 
         _pathBox               = this.FindControl<TextBox>("PathBox")!;
@@ -110,6 +113,7 @@ public partial class SftpFileBrowserView : UserControl
         _menuOpen       = this.FindControl<MenuItem>("MenuOpen")!;
         _menuDownloadTo = this.FindControl<MenuItem>("MenuDownloadTo")!;
         _menuDelete     = this.FindControl<MenuItem>("MenuDelete")!;
+        _menuProperties = this.FindControl<MenuItem>("MenuProperties")!;
         _transferOverlay       = this.FindControl<TransferProgressOverlay>("TransferOverlay")!;
 
         _filesGrid.ItemsSource = Entries;
@@ -290,13 +294,27 @@ public partial class SftpFileBrowserView : UserControl
         bool hasEntry   = entry != null;
         bool isParent   = entry?.IsParentLink == true;
         bool isFile     = hasEntry && !entry!.IsDirectory;
+        bool isDir      = hasEntry && entry!.IsDirectory && !isParent;
 
         _menuOpen.IsEnabled       = isFile && !isParent;
         _menuDownloadTo.IsEnabled = hasEntry && !isParent;
         _menuDelete.IsEnabled     = hasEntry && !isParent;
+        _menuProperties.IsVisible = isDir && _sshClient?.IsConnected == true;
 
         // Rebuild the "Download to ▶" submenu dynamically
         RebuildDownloadToSubMenu();
+    }
+
+    private async void OnMenuPropertiesClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_filesGrid.SelectedItem is not SftpEntry entry || !entry.IsDirectory || entry.IsParentLink)
+            return;
+        if (_sshClient == null || !_sshClient.IsConnected)
+            return;
+
+        var owner = TopLevel.GetTopLevel(this) as Window;
+        var dialog = new FolderPropertiesDialog(_sshClient, entry.FullPath);
+        await dialog.ShowDialog(owner!);
     }
 
     private void RebuildDownloadToSubMenu()
