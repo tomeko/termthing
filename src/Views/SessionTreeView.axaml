@@ -1,0 +1,25 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:TermThing.Views"
+             x:Class="TermThing.Views.SessionTreeView"
+             Background="#252526">
+
+    <TreeView x:Name="SessionTree"
+              DoubleTapped="OnTreeDoubleTapped"
+              Background="Transparent">
+
+        <!-- Bind IsExpanded on each container back to the node model (TwoWay so user toggles are saved). -->
+        <TreeView.Styles>
+            <Style Selector="TreeViewItem">
+                <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+            </Style>
+        </TreeView.Styles>
+
+        <TreeView.ItemTemplate>
+            <TreeDataTemplate ItemsSource="{Binding Children}">
+                <TextBlock Text="{Binding Header}" Padding="2,1"/>
+            </TreeDataTemplate>
+        </TreeView.ItemTemplate>
+    </TreeView>
+
+</UserControl>

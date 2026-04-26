@@ -1,0 +1,29 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="TermThing.Views.TransferProgressOverlay"
+             IsVisible="False"
+             Background="#CC1e1e1e">
+
+    <Grid Margin="8,4" ColumnDefinitions="*,Auto">
+        <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+            <TextBlock x:Name="TransferLabel"
+                       Text="Transferring…"
+                       FontSize="11"
+                       Foreground="White"
+                       TextTrimming="CharacterEllipsis"/>
+            <ProgressBar x:Name="TransferProgress"
+                         Minimum="0" Maximum="100"
+                         Value="0"
+                         Height="6"
+                         IsIndeterminate="True"/>
+        </StackPanel>
+        <Button Grid.Column="1"
+                x:Name="CancelButton"
+                Content="Cancel"
+                FontSize="11"
+                Padding="8,4"
+                Margin="8,0,0,0"
+                VerticalAlignment="Center"
+                Click="OnCancelClicked"/>
+    </Grid>
+</UserControl>

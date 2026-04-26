@@ -1,0 +1,79 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="TermThing.Views.SessionEndedOverlay"
+             Background="#CC000000">
+
+    <UserControl.Styles>
+        <!-- Highlight whichever button currently has focus (works for both keyboard and
+             programmatic Focus() calls, since :focus-visible only fires on keyboard nav). -->
+        <Style Selector="Button:focus">
+            <Setter Property="BorderBrush" Value="White"/>
+            <Setter Property="BorderThickness" Value="2"/>
+        </Style>
+        <!-- Visual emphasis for the default (Close) button so it reads as the primary action
+             even before focus is visible. -->
+        <Style Selector="Button.default-action">
+            <Setter Property="Background" Value="#0078d4"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <Style Selector="Button.default-action:pointerover">
+            <Setter Property="Background" Value="#106ebe"/>
+        </Style>
+        <Style Selector="Button.default-action:focus">
+            <Setter Property="BorderBrush" Value="White"/>
+            <Setter Property="BorderThickness" Value="2"/>
+        </Style>
+    </UserControl.Styles>
+
+    <!-- Centred card -->
+    <Border HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Background="#2d2d2d"
+            BorderBrush="#555"
+            BorderThickness="1"
+            CornerRadius="6"
+            Padding="28,20"
+            MinWidth="320">
+        <StackPanel Spacing="16">
+
+            <!-- Icon + title -->
+            <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center">
+                <TextBlock Text="⚡" FontSize="18" VerticalAlignment="Center"/>
+                <TextBlock x:Name="TitleText"
+                           Text="Session disconnected"
+                           FontSize="15"
+                           FontWeight="SemiBold"
+                           Foreground="White"
+                           VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- Optional reason line -->
+            <TextBlock x:Name="ReasonText"
+                       Text=""
+                       FontSize="11"
+                       Foreground="#aaa"
+                       TextWrapping="Wrap"
+                       MaxWidth="340"
+                       HorizontalAlignment="Center"
+                       IsVisible="False"/>
+
+            <!-- Buttons -->
+            <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Center"
+                        Spacing="10">
+                <Button x:Name="ReconnectButton"
+                        Content="Reconnect"
+                        Padding="16,6"
+                        Click="OnReconnectClicked"/>
+                <Button x:Name="CloseButton"
+                        Content="Close"
+                        Padding="16,6"
+                        Classes="default-action"
+                        IsDefault="True"
+                        Click="OnCloseClicked"/>
+            </StackPanel>
+
+        </StackPanel>
+    </Border>
+
+</UserControl>

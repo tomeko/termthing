@@ -1,0 +1,32 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.SerialConnectDialog"
+        Title="Serial Connection (Not Yet Implemented)"
+        Width="400"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        SizeToContent="Height">
+    <Grid Margin="16" RowDefinitions="Auto,8,Auto,6,Auto,6,Auto,6,Auto,6,Auto,16,Auto,8,Auto">
+        <TextBlock Grid.Row="0" Text="Serial sessions are not yet implemented."
+                   Foreground="OrangeRed" FontWeight="SemiBold" TextWrapping="Wrap"/>
+
+        <TextBlock Grid.Row="2" Text="Port name:" VerticalAlignment="Center"/>
+        <TextBox Grid.Row="4" Watermark="e.g. COM3 or /dev/ttyUSB0" IsEnabled="False"/>
+
+        <TextBlock Grid.Row="6" Text="Baud rate:" VerticalAlignment="Center"/>
+        <TextBox Grid.Row="8" Text="9600" IsEnabled="False"/>
+
+        <TextBlock Grid.Row="10" Text="Data bits / Parity / Stop bits:" VerticalAlignment="Center"/>
+        <TextBox Grid.Row="12" Text="8 / None / 1" IsEnabled="False"/>
+
+        <TextBlock Grid.Row="14" Text="Connection will be available in a future update."
+                   Foreground="Gray" FontSize="11" TextWrapping="Wrap"/>
+
+        <StackPanel Grid.Row="14" Orientation="Horizontal" HorizontalAlignment="Right"
+                    Spacing="8" Margin="0,8,0,0">
+            <Button Content="Connect" IsEnabled="False"
+                    ToolTip.Tip="Serial sessions are not yet implemented"/>
+            <Button Content="Cancel" Click="OnCancelClicked" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

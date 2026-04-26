@@ -1,0 +1,112 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.SettingsWindow"
+        Title="TermThing Settings"
+        Width="680" Height="520"
+        MinWidth="520" MinHeight="380"
+        WindowStartupLocation="CenterOwner"
+        RequestedThemeVariant="Dark">
+
+    <DockPanel Margin="12">
+
+        <!-- Bottom OK / Cancel -->
+        <StackPanel DockPanel.Dock="Bottom"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="8"
+                    Margin="0,10,0,0">
+            <Button x:Name="OkButton"     Content="OK"     MinWidth="80" Click="OnOkClicked"/>
+            <Button x:Name="CancelButton" Content="Cancel" MinWidth="80" Click="OnCancelClicked"/>
+        </StackPanel>
+
+        <TabControl>
+
+            <!-- ============================================================
+                 General
+                 ============================================================ -->
+            <TabItem Header="General">
+                <StackPanel Margin="8" Spacing="12">
+                    <TextBlock Text="Recent sessions"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,2"/>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <TextBlock Text="Show this many recent sessions in the New Session dropdown:"
+                                   VerticalAlignment="Center"/>
+                        <NumericUpDown x:Name="RecentCountSpinner"
+                                       Minimum="1" Maximum="50"
+                                       Value="10"
+                                       Width="110"
+                                       VerticalAlignment="Center"/>
+                    </StackPanel>
+                </StackPanel>
+            </TabItem>
+
+            <!-- ============================================================
+                 File Associations
+                 ============================================================ -->
+            <TabItem Header="File Associations">
+                <DockPanel Margin="8">
+                    <!-- Instruction text -->
+                    <TextBlock DockPanel.Dock="Top"
+                               Text="Map file extensions to external apps used by the SFTP browser. Use {file} in Args as a placeholder for the file path."
+                               TextWrapping="Wrap"
+                               FontSize="11"
+                               Foreground="Gray"
+                               Margin="0,0,0,8"/>
+
+                    <!-- Add / Remove buttons -->
+                    <StackPanel DockPanel.Dock="Bottom"
+                                Orientation="Horizontal"
+                                Spacing="6"
+                                Margin="0,8,0,0">
+                        <Button x:Name="AddAssocButton"    Content="＋ Add"    Click="OnAddAssocClicked"/>
+                        <Button x:Name="RemoveAssocButton" Content="− Remove"  Click="OnRemoveAssocClicked"/>
+                    </StackPanel>
+
+                    <DataGrid x:Name="AssocGrid"
+                              AutoGenerateColumns="False"
+                              CanUserSortColumns="False"
+                              CanUserResizeColumns="True"
+                              GridLinesVisibility="Horizontal"
+                              HeadersVisibility="Column"
+                              FontSize="12">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Extension"
+                                                Binding="{Binding Extension}"
+                                                Width="90"/>
+                            <DataGridTextColumn Header="App Path"
+                                                Binding="{Binding AppPath}"
+                                                Width="*"/>
+                            <DataGridTextColumn Header="Args"
+                                                Binding="{Binding Args}"
+                                                Width="140"/>
+                            <DataGridTemplateColumn Header="" Width="34" CanUserResize="False">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="…"
+                                                Padding="4,2"
+                                                FontSize="11"
+                                                Tag="{Binding}"
+                                                Click="OnBrowseAppClicked"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- ============================================================
+                 Terminal  (placeholder for future options)
+                 ============================================================ -->
+            <TabItem Header="Terminal">
+                <StackPanel Margin="8" Spacing="8">
+                    <TextBlock Text="Terminal preferences will appear here in a future release."
+                               Foreground="Gray"/>
+                </StackPanel>
+            </TabItem>
+
+        </TabControl>
+    </DockPanel>
+</Window>

@@ -1,0 +1,16 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.RenameDialog"
+        Title="Rename"
+        Width="320"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        SizeToContent="Height">
+    <Grid Margin="16" RowDefinitions="Auto,8,Auto">
+        <TextBox x:Name="NameTextBox" Grid.Row="0"/>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button Content="OK" Click="OnOkClicked" IsDefault="True"/>
+            <Button Content="Cancel" Click="OnCancelClicked" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

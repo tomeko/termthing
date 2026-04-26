@@ -1,0 +1,32 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.KnownHostsManagerDialog"
+        Title="Manage Known Hosts"
+        Width="680"
+        Height="400"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="12">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Spacing="8" Margin="0,8,0,0">
+            <Button Content="Remove Selected" Click="OnRemoveClicked"/>
+            <Button Content="Close" Click="OnCloseClicked" IsDefault="True" IsCancel="True"/>
+        </StackPanel>
+
+        <DataGrid x:Name="EntriesGrid"
+                  IsReadOnly="True"
+                  CanUserSortColumns="True"
+                  CanUserResizeColumns="True"
+                  SelectionMode="Single"
+                  GridLinesVisibility="Horizontal"
+                  HeadersVisibility="Column">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Host" Binding="{Binding Host}" Width="160"/>
+                <DataGridTextColumn Header="Port" Binding="{Binding Port}" Width="55"/>
+                <DataGridTextColumn Header="Algorithm" Binding="{Binding KeyAlgorithm}" Width="130"/>
+                <DataGridTextColumn Header="SHA-256 Fingerprint" Binding="{Binding FingerprintSha256}" Width="*"
+                                    FontFamily="Cascadia Code,Consolas,monospace"/>
+                <DataGridTextColumn Header="Added (UTC)" Binding="{Binding AddedUtc, StringFormat='yyyy-MM-dd HH:mm'}" Width="130"/>
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</Window>

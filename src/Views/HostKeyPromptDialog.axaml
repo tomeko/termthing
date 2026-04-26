@@ -1,0 +1,49 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.HostKeyPromptDialog"
+        Title="Host Key Verification"
+        Width="520"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        SizeToContent="Height">
+    <Grid Margin="16" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto">
+
+        <TextBlock Grid.Row="0" Text="Do you want to connect to this server?" FontWeight="SemiBold" Margin="0,0,0,8"/>
+
+        <TextBlock x:Name="WarningText"
+                   Grid.Row="1"
+                   Foreground="OrangeRed"
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,10"
+                   IsVisible="False"/>
+
+        <Grid Grid.Row="2" ColumnDefinitions="110,*" RowDefinitions="Auto,Auto,Auto" Margin="0,0,0,10">
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Host:" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <TextBlock x:Name="HostText" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center"/>
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Key algorithm:" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,4,0,0"/>
+            <TextBlock x:Name="AlgorithmText" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Margin="0,4,0,0"/>
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Fingerprint:" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,4,0,0"/>
+            <TextBox x:Name="FingerprintText"
+                     Grid.Row="2" Grid.Column="1"
+                     IsReadOnly="True"
+                     Margin="0,4,0,0"
+                     FontFamily="Cascadia Code,Consolas,monospace"
+                     FontSize="11"/>
+        </Grid>
+
+        <TextBlock Grid.Row="3"
+                   Text="If you trust this key, click 'Trust &amp; Connect' to save it for future connections, or 'Connect Once' to proceed without saving."
+                   TextWrapping="Wrap"
+                   Foreground="Gray"
+                   FontSize="11"
+                   Margin="0,0,0,12"/>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button Content="Connect Once" Click="OnConnectOnceClicked"/>
+            <Button Content="Trust &amp; Connect" Click="OnTrustClicked" IsDefault="True"/>
+            <Button Content="Cancel" Click="OnCancelClicked" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

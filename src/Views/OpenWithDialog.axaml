@@ -1,0 +1,43 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.OpenWithDialog"
+        Title="Open With"
+        Width="380"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        RequestedThemeVariant="Dark">
+
+    <StackPanel Margin="20" Spacing="14">
+        <TextBlock x:Name="FileNameText"
+                   FontWeight="SemiBold"
+                   TextTrimming="CharacterEllipsis"/>
+
+        <TextBlock x:Name="MessageText"
+                   Text="No application is registered for this file type. Choose how to open it:"
+                   TextWrapping="Wrap"
+                   Foreground="Gray"
+                   FontSize="12"/>
+
+        <StackPanel Spacing="8">
+            <Button x:Name="SetNewButton"
+                    Content="Open with (set new association)…"
+                    HorizontalAlignment="Stretch"
+                    HorizontalContentAlignment="Left"
+                    Padding="10,6"
+                    Click="OnSetNewClicked"/>
+
+            <Button x:Name="OsButton"
+                    Content="Open with OS default…"
+                    HorizontalAlignment="Stretch"
+                    HorizontalContentAlignment="Left"
+                    Padding="10,6"
+                    Click="OnOsClicked"/>
+        </StackPanel>
+
+        <Button Content="Cancel"
+                HorizontalAlignment="Right"
+                MinWidth="80"
+                Click="OnCancelClicked"/>
+    </StackPanel>
+</Window>

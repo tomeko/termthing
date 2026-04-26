@@ -1,0 +1,94 @@
+using TermThing.Sessions;
+
+namespace TermThing.Configuration;
+
+/// <summary>
+/// Auto-saved UI-state settings persisted to <c>tempsettings.json</c> next to the
+/// executable. These are overwritten frequently and are never imported or exported.
+/// </summary>
+public sealed class TempSettings
+{
+    public int Version { get; init; } = 1;
+
+    // -----------------------------------------------------------------------
+    // Main window layout
+    // -----------------------------------------------------------------------
+
+    /// <summary>Width (pixels) of the left panel (sessions/SFTP column).</summary>
+    public double LeftColumnWidthPx { get; set; } = 260;
+
+    /// <summary>Width of the window when last closed.</summary>
+    public double WindowWidth { get; set; } = 1200;
+
+    /// <summary>Height of the window when last closed.</summary>
+    public double WindowHeight { get; set; } = 750;
+
+    /// <summary>Whether the window was maximized when last closed.</summary>
+    public bool WindowMaximized { get; set; } = false;
+
+    /// <summary>Index of the selected left tab (0 = Sessions, 1 = SFTP).</summary>
+    public int ActiveLeftTab { get; set; } = 0;
+
+    // -----------------------------------------------------------------------
+    // SFTP DataGrid column widths (keyed by column header text)
+    // -----------------------------------------------------------------------
+
+    public Dictionary<string, double> SftpColumnWidths { get; set; } = [];
+
+    // -----------------------------------------------------------------------
+    // New-session toolbar
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The session kind opened by the primary New-Session button.
+    /// Remembered across restarts so the user's last choice is pre-selected.
+    /// </summary>
+    public SessionKind LastNewSessionKind { get; set; } = SessionKind.Local;
+
+    /// <summary>
+    /// Ordered list of recently launched saved-session IDs (most-recent first).
+    /// Stale IDs (deleted sessions) are pruned on tree changes.
+    /// </summary>
+    public List<Guid> RecentSessionIds { get; set; } = [];
+
+    // -----------------------------------------------------------------------
+    // Terminal
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Font size used by terminal tabs. 0 means "use the launcher default".
+    /// Adjusted at runtime via Ctrl+Wheel.
+    /// </summary>
+    public double TerminalFontSize { get; set; } = 0;
+
+    // -----------------------------------------------------------------------
+    // Download destinations
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Recently used download folders (most-recent first, capped at 5).
+    /// </summary>
+    public List<string> RecentDownloadFolders { get; set; } = [];
+
+    // -----------------------------------------------------------------------
+    // Local session shell picker (Windows)
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Process path of the last-selected local shell on Windows
+    /// (e.g. <c>"cmd.exe"</c> or <c>"C:\Program Files\PowerShell\7\pwsh.exe"</c>).
+    /// Used to pre-select the right item in the shell-picker dropdown.
+    /// Empty string means "use the first available option".
+    /// </summary>
+    public string LastLocalShell { get; set; } = string.Empty;
+
+    // -----------------------------------------------------------------------
+    // Session tree
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Expansion state for session tree groups, keyed by <see cref="Sessions.SessionGroup.Id"/>.
+    /// Missing keys default to <c>true</c> (expanded) — ensures auto-expand on first run.
+    /// </summary>
+    public Dictionary<Guid, bool> SessionTreeExpansion { get; set; } = [];
+}

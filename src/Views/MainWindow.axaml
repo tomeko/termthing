@@ -1,0 +1,87 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:TermThing.Views"
+        x:Class="TermThing.Views.MainWindow"
+        Title="TermThing"
+        RequestedThemeVariant="Dark"
+        Width="1200" Height="750">
+
+    <DockPanel>
+
+        <!-- Top toolbar -->
+        <Grid DockPanel.Dock="Top"
+              Background="#1e1e1e"
+              ColumnDefinitions="Auto,Auto,Auto,*,Auto"
+              Margin="6,4">
+
+            <!-- New Session split-button -->
+            <SplitButton Grid.Column="0"
+                         x:Name="NewSessionButton"
+                         Content="＋ New Session"
+                         Click="OnNewSessionPrimaryClicked"
+                         Margin="0,0,6,0">
+                <SplitButton.Flyout>
+                    <MenuFlyout>
+                        <MenuItem Header="🖥  Local…" Click="OnNewLocalClicked"/>
+                        <MenuItem Header="🌐  SSH…"   Click="OnNewSshClicked"/>
+                        <MenuItem Header="🔌  Serial…" Click="OnNewSerialClicked"/>
+                    </MenuFlyout>
+                </SplitButton.Flyout>
+            </SplitButton>
+
+            <Button Grid.Column="1" Content="💾 Save" Click="OnSaveClicked" Margin="0,0,6,0"/>
+
+            <!-- Overflow menu -->
+            <Button Grid.Column="2" Content="⋯" Click="OnOverflowClicked">
+                <Button.Flyout>
+                    <MenuFlyout>
+                        <MenuItem Header="Import sessions…"    Click="OnImportClicked"/>
+                        <MenuItem Header="Export sessions…"    Click="OnExportClicked"/>
+                        <Separator/>
+                        <MenuItem Header="Manage known hosts…" Click="OnManageKnownHostsClicked"/>
+                    </MenuFlyout>
+                </Button.Flyout>
+            </Button>
+
+            <!-- Settings gear -->
+            <Button Grid.Column="4" Content="⚙" Click="OnSettingsClicked"
+                    ToolTip.Tip="Settings"
+                    Padding="6,2"
+                    FontSize="14"/>
+        </Grid>
+
+        <!-- Body: left pane | splitter | terminal tabs -->
+        <Grid x:Name="MainBodyGrid" ColumnDefinitions="260,4,*">
+
+            <!-- Left pane: Sessions tree / SFTP browser -->
+            <TabControl Grid.Column="0"
+                        x:Name="LeftTabs"
+                        TabStripPlacement="Bottom"
+                        Background="#252526">
+                <TabItem Header="Sessions">
+                    <views:SessionTreeView x:Name="SessionTree"/>
+                </TabItem>
+                <TabItem Header="SFTP" x:Name="SftpTab">
+                    <ContentControl x:Name="SftpPanelHost">
+                        <TextBlock Text="No SFTP session active"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="Gray"
+                                   FontSize="11"/>
+                    </ContentControl>
+                </TabItem>
+            </TabControl>
+
+            <GridSplitter Grid.Column="1"
+                          Background="#444"
+                          ResizeDirection="Columns"
+                          DragCompleted="OnSplitterDragCompleted"/>
+
+            <!-- Terminal tabs -->
+            <TabControl Grid.Column="2"
+                        x:Name="TerminalTabs"
+                        TabStripPlacement="Top"
+                        SelectionChanged="OnTabSelectionChanged"/>
+        </Grid>
+    </DockPanel>
+</Window>
