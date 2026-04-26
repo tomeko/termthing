@@ -16,6 +16,15 @@ public sealed class SshPtyConnection : IPtyConnection
     private readonly ShellStream _shell;
     private readonly BlockingShellReaderStream _readerStream;
     private bool _disposed;
+    private int _closedFired;
+
+    /// <summary>
+    /// Raised once when the SSH shell exits (either clean exit or abrupt disconnect).
+    /// More reliable than <see cref="ProcessExited"/> for SSH connections because
+    /// that event is only raised by <see cref="Iciclecreek.Terminal.TerminalControl"/>
+    /// when it owns the process launch — which we bypass via reflection.
+    /// </summary>
+    public event EventHandler? ConnectionClosed;
 
     public SshPtyConnection(SshClient client, ShellStream shell)
     {
@@ -26,7 +35,7 @@ public sealed class SshPtyConnection : IPtyConnection
         // while the session is alive.  SSH.NET's ShellStream.Read() is non-blocking
         // and returns 0 when its internal buffer is momentarily empty; TerminalView's
         // read loop treats a 0-byte read as EOF and permanently blocks input.
-        _readerStream = new BlockingShellReaderStream(shell, client);
+        _readerStream = new BlockingShellReaderStream(shell, client, this);
 
         // Detect abrupt disconnects (TCP drop, network loss, remote sshd killed).
         _client.ErrorOccurred += OnClientError;
@@ -49,9 +58,16 @@ public sealed class SshPtyConnection : IPtyConnection
     {
         _readerStream.SignalClosed();
         try { _shell.Close(); } catch { }
+        FireConnectionClosed();
     }
 
-    public bool WaitForExit(int milliseconds) => !_client.IsConnected;
+    public bool WaitForExit(int milliseconds) => _readerStream.HasClosed || !_client.IsConnected;
+
+    internal void FireConnectionClosed()
+    {
+        if (Interlocked.CompareExchange(ref _closedFired, 1, 0) == 0)
+            ConnectionClosed?.Invoke(this, EventArgs.Empty);
+ }
 
     public void Kill()
     {
@@ -120,19 +136,32 @@ public sealed class SshPtyConnection : IPtyConnection
     {
         private readonly ShellStream _shell;
         private readonly SshClient _client;
+        private readonly SshPtyConnection _owner;
         private readonly SemaphoreSlim _dataReady = new(0, int.MaxValue);
         private readonly CancellationTokenSource _closedCts = new();
 
-        public BlockingShellReaderStream(ShellStream shell, SshClient client)
+        public BlockingShellReaderStream(ShellStream shell, SshClient client, SshPtyConnection owner)
         {
             _shell = shell;
             _client = client;
+            _owner = owner;
             shell.DataReceived += OnDataReceived;
+            // Fired when the remote shell exits cleanly (e.g. user types "exit").
+            // Without this, ReadAsync would loop forever: Read() returns 0,
+            // IsConnected stays true (TCP is still up), and we wait for data
+            // that will never arrive.
+            shell.Closed += OnShellClosed;
         }
 
         private void OnDataReceived(object? sender, EventArgs e)
         {
             try { _dataReady.Release(); } catch { }
+        }
+
+        private void OnShellClosed(object? sender, EventArgs e)
+        {
+            SignalClosed();
+            _owner.FireConnectionClosed();
         }
 
         /// <summary>
@@ -141,8 +170,16 @@ public sealed class SshPtyConnection : IPtyConnection
         /// </summary>
         public void SignalClosed()
         {
+            HasClosed = true;
             try { _closedCts.Cancel(); } catch { }
         }
+
+        /// <summary>
+        /// Returns <see langword="true"/> once <see cref="SignalClosed"/> has been called.
+        /// Used by <see cref="SshPtyConnection.WaitForExit"/> to correctly report
+        /// clean shell exits (where the TCP connection is still alive).
+        /// </summary>
+        public bool HasClosed { get; private set; }
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -205,6 +242,7 @@ public sealed class SshPtyConnection : IPtyConnection
             if (disposing)
             {
                 _shell.DataReceived -= OnDataReceived;
+                _shell.Closed -= OnShellClosed;
                 try { _closedCts.Cancel(); } catch { }
                 try { _closedCts.Dispose(); } catch { }
                 try { _dataReady.Dispose(); } catch { }

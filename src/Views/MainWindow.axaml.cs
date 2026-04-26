@@ -775,6 +775,9 @@ public partial class MainWindow : Window, ISessionPromptHost
                 Foreground = Brushes.Gray,
                 FontSize = 11,
             };
+            // Switch left panel back to Sessions if SFTP tab was active
+            if (LeftTabs?.SelectedIndex == 1)
+                LeftTabs.SelectedIndex = 0;
         }
     }
 

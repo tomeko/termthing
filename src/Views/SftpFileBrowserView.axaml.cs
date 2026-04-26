@@ -146,6 +146,7 @@ public partial class SftpFileBrowserView : UserControl
     private async Task NavigateAsync(string path)
     {
         if (_navigating) return;
+        if (!_sftpClient.IsConnected) return;
         _navigating = true;
 
         try
@@ -547,10 +548,21 @@ public partial class SftpFileBrowserView : UserControl
     private void RestoreColumnWidths()
     {
         var saved = SettingsService.Temp.SftpColumnWidths;
+        // Remove any stale pixel-width entries for star-sized columns
+        foreach (var col in _filesGrid.Columns)
+            if (col.Width.IsStar && col.Header is string h)
+                saved.Remove(h);
+
+        // Clamp saved widths against the column's MinWidth so stale tiny values
+        // (e.g. from when Name was a star column and got saved as a near-zero pixel)
+        // don't make a column invisible.
         foreach (var col in _filesGrid.Columns)
         {
-            if (col.Header is string header && saved.TryGetValue(header, out var w) && w > 0)
-                col.Width = new DataGridLength(w);
+            if (col.Width.IsStar) continue;
+            if (col.Header is not string header) continue;
+            if (!saved.TryGetValue(header, out var w) || w <= 0) continue;
+            var minW = col.MinWidth > 0 ? col.MinWidth : 30;
+            col.Width = new DataGridLength(Math.Max(w, minW));
         }
     }
 
@@ -561,6 +573,9 @@ public partial class SftpFileBrowserView : UserControl
 
         foreach (var col in _filesGrid.Columns)
         {
+            // Don't persist the filler star column
+            if (col.Width.IsStar) continue;
+
             col.PropertyChanged += (_, args) =>
             {
                 if (args.Property.Name != nameof(col.ActualWidth)) return;

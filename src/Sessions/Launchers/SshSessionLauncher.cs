@@ -5,6 +5,7 @@ using Avalonia.Threading;
 using Iciclecreek.Terminal;
 using Renci.SshNet;
 using Renci.SshNet.Common;
+using System.Diagnostics;
 using System.IO;
 using TermThing.Configuration;
 using TermThing.Ssh;
@@ -91,7 +92,9 @@ public sealed class SshSessionLauncher : ISessionLauncher
         };
 
         // First connection attempt
+        var connectSw = Stopwatch.StartNew();
         await Task.Run(() => { try { client.Connect(); } catch { } }, cancellationToken);
+        Debug.WriteLine($"[SSH] Connect: {connectSw.ElapsedMilliseconds}ms  kex={connectionInfo.CurrentKeyExchangeAlgorithm}  cipher={connectionInfo.CurrentServerEncryption}");
 
         // Handle unknown / mismatched key
         if (pendingKeyArgs is not null)
@@ -116,10 +119,16 @@ public sealed class SshSessionLauncher : ISessionLauncher
         }
 
         SftpClient? sftpClient = null;
+        Task? sftpConnectTask = null;
         if (settings.EnableSftp)
         {
+            var sftpSw = Stopwatch.StartNew();
             sftpClient = new SftpClient(connectionInfo);
-            await Task.Run(() => sftpClient.Connect(), cancellationToken);
+            // Fire the SFTP handshake in the background so the terminal appears
+            // immediately rather than waiting for a second full SSH negotiation.
+            sftpConnectTask = Task.Run(() => sftpClient.Connect(), cancellationToken)
+                .ContinueWith(_ => Debug.WriteLine($"[SSH] SFTP connect: {sftpSw.ElapsedMilliseconds}ms"),
+                    TaskScheduler.Default);
         }
 
         // Use the persisted font size if one has been set via Ctrl+Wheel
@@ -146,13 +155,14 @@ public sealed class SshSessionLauncher : ISessionLauncher
             tc.Loaded += (_, _) => tcs.TrySetResult(true);
             // Return the instance now; the caller will add it to the visual tree
             // and LaunchConnectionAsync will complete after layout
-            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient);
-            _ = CompleteConnectionAsync(tc, client, sftpClient, settings, tcs.Task);
+            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask);
+            _ = CompleteConnectionAsync(tc, client, sftpClient, settings, tcs.Task, instance);
             return instance;
         }
 
-        await CompleteConnectionAsync(tc, client, sftpClient, settings, Task.CompletedTask);
-        return new SshSessionInstance(tc, definition.Name, client, sftpClient);
+        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask);
+        await CompleteConnectionAsync(tc, client, sftpClient, settings, Task.CompletedTask, loadedInstance);
+        return loadedInstance;
     }
 
     private static async Task CompleteConnectionAsync(
@@ -160,13 +170,17 @@ public sealed class SshSessionLauncher : ISessionLauncher
         SshClient client,
         SftpClient? sftpClient,
         SshSettings settings,
-        Task loadedTask)
+        Task loadedTask,
+        SshSessionInstance instance)
     {
         await loadedTask;
         var cols = (uint)Math.Max(80, tc.Terminal.Cols);
         var rows = (uint)Math.Max(24, tc.Terminal.Rows);
+        var shellSw = Stopwatch.StartNew();
         var shell = client.CreateShellStream(settings.Term, cols, rows, 0, 0, 0x10000);
+        Debug.WriteLine($"[SSH] CreateShellStream: {shellSw.ElapsedMilliseconds}ms");
         var connection = new SshPtyConnection(client, shell);
+        instance.OnPtyConnectionReady(connection);
         await tc.AttachConnection(connection);
 
         if (sftpClient != null && settings.ShellIntegrationOsc7)
@@ -195,9 +209,29 @@ public sealed class SshSessionLauncher : ISessionLauncher
             authMethods.Add(new PasswordAuthenticationMethod(s.Username, s.TransientPassword));
 
         if (authMethods.Count == 0)
-            authMethods.Add(new PasswordAuthenticationMethod(s.Username, string.Empty));
+            authMethods.Add(new NoneAuthenticationMethod(s.Username));
 
-        return new ConnectionInfo(s.Host, s.Port, s.Username, [.. authMethods]);
+        var info = new ConnectionInfo(s.Host, s.Port, s.Username, [.. authMethods]);
+
+        // Remove/deprioritize slow key-exchange algorithms.
+        // diffie-hellman-group18-sha512 uses 8192-bit DH in managed .NET code and
+        // can take 2-3 seconds on its own — PuTTY/MobaXterm use native C so they
+        // never notice it.  PQC algorithms are also expensive; demote them to the
+        // end so a server that supports curve25519 picks it immediately instead.
+        info.KeyExchangeAlgorithms.Remove("diffie-hellman-group18-sha512");
+        foreach (var pqc in new[] {
+            "mlkem768x25519-sha256",
+            "sntrup761x25519-sha512",
+            "sntrup761x25519-sha512@openssh.com" })
+        {
+            if (info.KeyExchangeAlgorithms.TryGetValue(pqc, out var factory))
+            {
+                info.KeyExchangeAlgorithms.Remove(pqc);
+                info.KeyExchangeAlgorithms.Add(pqc, factory);
+            }
+        }
+
+        return info;
     }
 
     private static async Task<(HostKeyAction, HostKeyEventArgs)> PromptHostKeyAsync(
@@ -223,7 +257,7 @@ internal sealed class SshSessionInstance : ISessionInstance
     private readonly SftpClient? _sftpClient;
     private readonly SftpFileBrowserView? _sftpView;
 
-    public SshSessionInstance(TerminalControl tc, string title, SshClient client, SftpClient? sftpClient)
+    public SshSessionInstance(TerminalControl tc, string title, SshClient client, SftpClient? sftpClient, Task? sftpConnectTask = null)
     {
         _tc = tc;
         _client = client;
@@ -234,10 +268,15 @@ internal sealed class SshSessionInstance : ISessionInstance
         {
             _sftpView = new SftpFileBrowserView(sftpClient);
 
-            // Navigate to home directory immediately so the panel has content on first open.
-            // WorkingDirectory is the SFTP session's initial directory (usually ~).
-            var homeDir = sftpClient.WorkingDirectory;
-            Dispatcher.UIThread.Post(() => _sftpView.NavigateTo(homeDir));
+            // Navigate to home directory once the SFTP handshake completes.
+            // sftpConnectTask may already be completed (synchronous path) or still
+            // running (lazy background path); ContinueWith handles both correctly.
+            (sftpConnectTask ?? Task.CompletedTask).ContinueWith(_ =>
+            {
+                if (!sftpClient.IsConnected) return;
+                var homeDir = sftpClient.WorkingDirectory;
+                Dispatcher.UIThread.Post(() => _sftpView.NavigateTo(homeDir));
+            }, TaskScheduler.Default);
 
             tc.PropertyChanged += (_, args) =>
             {
@@ -250,8 +289,17 @@ internal sealed class SshSessionInstance : ISessionInstance
         {
             if (!e.Handled) { Title = e.Title; e.Handled = true; }
         });
+    }
 
-        tc.ProcessExited += (_, _) =>
+    /// <summary>
+    /// Called from <see cref="SshSessionLauncher.CompleteConnectionAsync"/> once the
+    /// <see cref="SshPtyConnection"/> is created. Subscribes to its
+    /// <see cref="SshPtyConnection.ConnectionClosed"/> event so the session-ended
+    /// overlay is shown when the user exits the shell or the connection drops.
+    /// </summary>
+    internal void OnPtyConnectionReady(SshPtyConnection connection)
+    {
+        connection.ConnectionClosed += (_, _) =>
         {
             _sftpClient?.Dispose();
             Dispatcher.UIThread.Post(() => SessionEnded?.Invoke(this, EventArgs.Empty));
