@@ -22,9 +22,10 @@ public partial class HostKeyPromptDialog : Window
         AlgorithmText.Text = e.HostKeyName;
         FingerprintText.Text = $"SHA256:{fp}";
 
+        var label = port == 22 ? host : $"{host}:{port}";
         if (status == KnownHostStatus.Mismatched)
         {
-            Title = "⚠ Host Key Mismatch — Possible Security Risk";
+            Title = $"⚠ Host Key Mismatch — {label}";
             WarningText.IsVisible = true;
             WarningText.Text =
                 "WARNING: The host key for this server has CHANGED since you last connected.\n" +
@@ -32,7 +33,7 @@ public partial class HostKeyPromptDialog : Window
         }
         else
         {
-            Title = "Unknown Host Key";
+            Title = $"Unknown Host Key — {label}";
             WarningText.IsVisible = false;
         }
     }

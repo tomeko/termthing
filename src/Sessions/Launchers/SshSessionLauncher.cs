@@ -16,9 +16,13 @@ namespace TermThing.Sessions.Launchers;
 public sealed class SshSessionLauncher : ISessionLauncher
 {
     private readonly IKnownHostsService _knownHosts;
+    private readonly Func<AppConfig> _getConfig;
 
-    public SshSessionLauncher(IKnownHostsService knownHosts)
-        => _knownHosts = knownHosts;
+    public SshSessionLauncher(IKnownHostsService knownHosts, Func<AppConfig> getConfig)
+    {
+        _knownHosts = knownHosts;
+        _getConfig  = getConfig;
+    }
 
     public SessionKind Kind => SessionKind.Ssh;
 
@@ -58,109 +62,155 @@ public sealed class SshSessionLauncher : ISessionLauncher
                 ex.Message.Contains("passphrase", StringComparison.OrdinalIgnoreCase) ||
                 ex.Message.Contains("encrypted", StringComparison.OrdinalIgnoreCase))
             {
-                var passphrase = await promptHost.PromptForPassphraseAsync(settings.KeyFilePath);
+                var passphrase = await promptHost.PromptForPassphraseAsync(settings.KeyFilePath, settings.Host);
                 if (passphrase is null)
                     throw new OperationCanceledException("User cancelled passphrase entry.");
                 settings.TransientKeyPassphrase = passphrase;
             }
         }
 
-        // Build ConnectionInfo
-        ConnectionInfo connectionInfo = BuildConnectionInfo(settings);
+        // ----------------------------------------------------------------
+        // Resolve jump-host chain (empty = direct connect).
+        // ----------------------------------------------------------------
+        var hops = JumpHostResolver.Resolve(settings, _getConfig());
 
-        // Set up host-key verification before connecting
-        HostKeyEventArgs? pendingKeyArgs = null;
-        KnownHostStatus? pendingStatus = null;
-        var hostKeyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        SshClient client;
+        SshChainResult? chainResult = null;
 
-        SshClient client = new(connectionInfo);
-        client.HostKeyReceived += async (_, e) =>
+        if (hops.Count == 0)
         {
-            var status = _knownHosts.Check(settings.Host, settings.Port, e);
-            if (status == KnownHostStatus.Trusted)
-            {
-                e.CanTrust = true;
-                hostKeyTcs.TrySetResult(true);
-                return;
-            }
+            // --- Direct connection (existing path) ---
+            var connectionInfo = SshConnectionInfoFactory.Build(
+                settings.Host, settings.Port, settings.Username,
+                settings.KeyFilePath, settings.TransientKeyPassphrase, settings.TransientPassword);
 
-            // Not trusted — abort the sync callback, then prompt the user asynchronously
-            e.CanTrust = false;
-            pendingKeyArgs = e;
-            pendingStatus = status;
-            hostKeyTcs.TrySetResult(false);
-        };
+            HostKeyEventArgs? pendingKeyArgs = null;
+            KnownHostStatus?  pendingStatus  = null;
 
-        // First connection attempt
-        var connectSw = Stopwatch.StartNew();
-        await Task.Run(() => { try { client.Connect(); } catch { } }, cancellationToken);
-        Debug.WriteLine($"[SSH] Connect: {connectSw.ElapsedMilliseconds}ms  kex={connectionInfo.CurrentKeyExchangeAlgorithm}  cipher={connectionInfo.CurrentServerEncryption}");
-
-        // Handle unknown / mismatched key
-        if (pendingKeyArgs is not null)
-        {
-            var (action, args) = await PromptHostKeyAsync(settings.Host, settings.Port,
-                pendingStatus!.Value, pendingKeyArgs);
-
-            if (action == HostKeyAction.Cancel)
-            {
-                client.Dispose();
-                throw new OperationCanceledException("SSH connection aborted by user.");
-            }
-
-            if (action == HostKeyAction.TrustAndConnect)
-                _knownHosts.Trust(settings.Host, settings.Port, args);
-
-            // Reconnect trusting the key this time
-            client.Dispose();
             client = new SshClient(connectionInfo);
-            client.HostKeyReceived += (_, e) => e.CanTrust = true;
-            await Task.Run(() => client.Connect(), cancellationToken);
+            client.HostKeyReceived += (_, e) =>
+            {
+                var status = _knownHosts.Check(settings.Host, settings.Port, e);
+                if (status == KnownHostStatus.Trusted) { e.CanTrust = true; return; }
+                e.CanTrust    = false;
+                pendingKeyArgs = e;
+                pendingStatus  = status;
+            };
+
+            var connectSw = Stopwatch.StartNew();
+            await Task.Run(() => { try { client.Connect(); } catch { } }, cancellationToken);
+            Debug.WriteLine($"[SSH] Connect: {connectSw.ElapsedMilliseconds}ms  kex={connectionInfo.CurrentKeyExchangeAlgorithm}  cipher={connectionInfo.CurrentServerEncryption}");
+
+            if (pendingKeyArgs is not null)
+            {
+                var (action, args) = await PromptHostKeyAsync(settings.Host, settings.Port,
+                    pendingStatus!.Value, pendingKeyArgs);
+
+                if (action == HostKeyAction.Cancel)
+                {
+                    client.Dispose();
+                    throw new OperationCanceledException("SSH connection aborted by user.");
+                }
+                if (action == HostKeyAction.TrustAndConnect)
+                    _knownHosts.Trust(settings.Host, settings.Port, args);
+
+                client.Dispose();
+                client = new SshClient(connectionInfo);
+                client.HostKeyReceived += (_, e) => e.CanTrust = true;
+                await Task.Run(() => client.Connect(), cancellationToken);
+            }
+        }
+        else
+        {
+            // --- Jump-host path ---
+            chainResult = await SshChainConnector.ConnectAsync(
+                hops, settings, _knownHosts, promptHost,
+                progress: msg => Debug.WriteLine($"[SSH jump] {msg}"),
+                cancellationToken: cancellationToken);
+            client = chainResult.FinalClient;
         }
 
-        SftpClient? sftpClient = null;
-        Task? sftpConnectTask = null;
+        // ----------------------------------------------------------------
+        // SFTP — needs a separate client through its own forward (or direct).
+        // ----------------------------------------------------------------
+        SftpClient? sftpClient     = null;
+        Task?       sftpConnectTask = null;
         if (settings.EnableSftp)
         {
             var sftpSw = Stopwatch.StartNew();
-            sftpClient = new SftpClient(connectionInfo);
-            // Fire the SFTP handshake in the background so the terminal appears
-            // immediately rather than waiting for a second full SSH negotiation.
+            if (chainResult is null)
+            {
+                // Direct — reuse the same ConnectionInfo as the shell client.
+                var directCi = SshConnectionInfoFactory.Build(
+                    settings.Host, settings.Port, settings.Username,
+                    settings.KeyFilePath, settings.TransientKeyPassphrase, settings.TransientPassword);
+                sftpClient = new SftpClient(directCi);
+            }
+            else
+            {
+                // Tunnelled — open a new forward on the last jump client so SFTP
+                // gets its own independent TCP stream.
+                var lastJump = chainResult.JumpClients.Count > 0
+                    ? chainResult.JumpClients[^1]
+                    : null;
+                if (lastJump is not null)
+                {
+                    var sftpFwd = new Renci.SshNet.ForwardedPortLocal(
+                        System.Net.IPAddress.Loopback.ToString(), (uint)0,
+                        settings.Host, (uint)settings.Port);
+                    lastJump.AddForwardedPort(sftpFwd);
+                    sftpFwd.Start();
+                    var sftpCi = SshConnectionInfoFactory.Build(
+                        System.Net.IPAddress.Loopback.ToString(), (int)sftpFwd.BoundPort,
+                        settings.Username, settings.KeyFilePath,
+                        settings.TransientKeyPassphrase, settings.TransientPassword);
+                    sftpClient = new SftpClient(sftpCi);
+                    // Store the extra forward so it is disposed with the chain.
+                    chainResult = chainResult with
+                    {
+                        Forwards = [.. chainResult.Forwards, sftpFwd],
+                    };
+                }
+                else
+                {
+                    // Edge case: chain resolved but no jump clients (shouldn't happen).
+                    sftpClient = new SftpClient(chainResult.FinalConnectionInfo);
+                }
+            }
+
             sftpConnectTask = Task.Run(() => sftpClient.Connect(), cancellationToken)
                 .ContinueWith(_ => Debug.WriteLine($"[SSH] SFTP connect: {sftpSw.ElapsedMilliseconds}ms"),
                     TaskScheduler.Default);
         }
 
-        // Use the persisted font size if one has been set via Ctrl+Wheel
+        // ----------------------------------------------------------------
+        // Build terminal control and launch.
+        // ----------------------------------------------------------------
         var fontSize = SettingsService.Temp.TerminalFontSize > 0
             ? SettingsService.Temp.TerminalFontSize
             : 14;
 
         var tc = new TerminalControl
         {
-            Process = string.Empty,
+            Process    = string.Empty,
             Background = Brushes.Black,
             Foreground = Brushes.LightGray,
             FontFamily = FontFamily.Parse("fonts:CascadiaCode#Cascadia Code"),
-            FontSize = fontSize,
+            FontSize   = fontSize,
         };
 
-        // Attach terminal mouse enhancements (Ctrl+RightClick menu, Ctrl+Wheel font size)
         TerminalContextMenuBehavior.Attach(tc);
 
-        // Wait for TerminalControl to be loaded so we can read Cols/Rows
         if (!tc.IsLoaded)
         {
             var tcs = new TaskCompletionSource<bool>();
             tc.Loaded += (_, _) => tcs.TrySetResult(true);
-            // Return the instance now; the caller will add it to the visual tree
-            // and LaunchConnectionAsync will complete after layout
-            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask);
+            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult);
             _ = CompleteConnectionAsync(tc, client, sftpClient, settings, tcs.Task, instance);
             return instance;
         }
 
-        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask);
+        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult);
         await CompleteConnectionAsync(tc, client, sftpClient, settings, Task.CompletedTask, loadedInstance);
         return loadedInstance;
     }
@@ -190,50 +240,6 @@ public sealed class SshSessionLauncher : ISessionLauncher
         }
     }
 
-    private static ConnectionInfo BuildConnectionInfo(SshSettings s)
-    {
-        var authMethods = new List<AuthenticationMethod>();
-
-        if (!string.IsNullOrWhiteSpace(s.KeyFilePath))
-        {
-            if (!File.Exists(s.KeyFilePath))
-                throw new FileNotFoundException("Private key file not found.", s.KeyFilePath);
-
-            PrivateKeyFile keyFile = string.IsNullOrEmpty(s.TransientKeyPassphrase)
-                ? new PrivateKeyFile(s.KeyFilePath)
-                : new PrivateKeyFile(s.KeyFilePath, s.TransientKeyPassphrase);
-            authMethods.Add(new PrivateKeyAuthenticationMethod(s.Username, keyFile));
-        }
-
-        if (!string.IsNullOrEmpty(s.TransientPassword))
-            authMethods.Add(new PasswordAuthenticationMethod(s.Username, s.TransientPassword));
-
-        if (authMethods.Count == 0)
-            authMethods.Add(new NoneAuthenticationMethod(s.Username));
-
-        var info = new ConnectionInfo(s.Host, s.Port, s.Username, [.. authMethods]);
-
-        // Remove/deprioritize slow key-exchange algorithms.
-        // diffie-hellman-group18-sha512 uses 8192-bit DH in managed .NET code and
-        // can take 2-3 seconds on its own — PuTTY/MobaXterm use native C so they
-        // never notice it.  PQC algorithms are also expensive; demote them to the
-        // end so a server that supports curve25519 picks it immediately instead.
-        info.KeyExchangeAlgorithms.Remove("diffie-hellman-group18-sha512");
-        foreach (var pqc in new[] {
-            "mlkem768x25519-sha256",
-            "sntrup761x25519-sha512",
-            "sntrup761x25519-sha512@openssh.com" })
-        {
-            if (info.KeyExchangeAlgorithms.TryGetValue(pqc, out var factory))
-            {
-                info.KeyExchangeAlgorithms.Remove(pqc);
-                info.KeyExchangeAlgorithms.Add(pqc, factory);
-            }
-        }
-
-        return info;
-    }
-
     private static async Task<(HostKeyAction, HostKeyEventArgs)> PromptHostKeyAsync(
         string host, int port, KnownHostStatus status, HostKeyEventArgs args)
     {
@@ -256,9 +262,17 @@ internal sealed class SshSessionInstance : ISessionInstance
     private readonly SshClient _client;
     private readonly SftpClient? _sftpClient;
     private readonly SftpFileBrowserView? _sftpView;
+    private readonly SshChainResult? _chain;
 
-    public SshSessionInstance(TerminalControl tc, string title, SshClient client, SftpClient? sftpClient, Task? sftpConnectTask = null)
+    public SshSessionInstance(
+        TerminalControl  tc,
+        string           title,
+        SshClient        client,
+        SftpClient?      sftpClient,
+        Task?            sftpConnectTask = null,
+        SshChainResult?  chain           = null)
     {
+        _chain = chain;
         _tc = tc;
         _client = client;
         _sftpClient = sftpClient;
@@ -313,13 +327,27 @@ internal sealed class SshSessionInstance : ISessionInstance
 
     public void Kill()
     {
-        // Disconnect the SSH client first — this tears down the shell stream,
-        // which signals the TerminalView reader loop to exit cleanly.
+        // 1. Disconnect the final-target SSH client — tears down the shell stream.
         try { if (_client.IsConnected) _client.Disconnect(); } catch { }
         try { _client.Dispose(); } catch { }
         try { _sftpClient?.Dispose(); } catch { }
-        // Kill the TerminalControl last; _ptyConnection may be null if AttachConnection
-        // hadn't completed yet, so swallow any NullReferenceException.
+
+        // 2. Dispose jump-host chain resources in reverse order.
+        if (_chain is not null)
+        {
+            for (int i = _chain.Forwards.Count - 1; i >= 0; i--)
+            {
+                try { _chain.Forwards[i].Stop();    } catch { }
+                try { _chain.Forwards[i].Dispose(); } catch { }
+            }
+            for (int i = _chain.JumpClients.Count - 1; i >= 0; i--)
+            {
+                try { if (_chain.JumpClients[i].IsConnected) _chain.JumpClients[i].Disconnect(); } catch { }
+                try { _chain.JumpClients[i].Dispose(); } catch { }
+            }
+        }
+
+        // 3. Kill the TerminalControl last.
         try { _tc.Kill(); } catch { }
     }
 

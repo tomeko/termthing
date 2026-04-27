@@ -11,6 +11,9 @@ public partial class SessionTreeView : UserControl
     // Raised when the user double-clicks a session to launch it
     public event EventHandler<SessionDefinition>? SessionLaunchRequested;
 
+    // Raised when the user requests editing a session's settings
+    public event EventHandler<SessionDefinition>? SessionEditRequested;
+
     // Raised when the tree data changes (add/rename/delete/move/duplicate)
     public event EventHandler? TreeChanged;
 
@@ -58,11 +61,15 @@ public partial class SessionTreeView : UserControl
         _mnuPaste     = new MenuItem { Header = "Paste"     }; _mnuPaste.Click     += OnPasteClicked;
         _mnuDelete    = new MenuItem { Header = "Delete"    }; _mnuDelete.Click    += OnDeleteClicked;
 
+        var mnuEdit = new MenuItem { Header = "Edit…" };
+        mnuEdit.Click += OnEditClicked;
+
         var menu = new ContextMenu();
         menu.Opening += OnContextMenuOpening;
         menu.Items.Add(mnuNewSession);
         menu.Items.Add(mnuNewSubgroup);
         menu.Items.Add(new Separator());
+        menu.Items.Add(mnuEdit);
         menu.Items.Add(_mnuRename);
         menu.Items.Add(_mnuDuplicate);
         menu.Items.Add(new Separator());
@@ -250,6 +257,12 @@ public partial class SessionTreeView : UserControl
     // -----------------------------------------------------------------------
     // Tree building
     // -----------------------------------------------------------------------
+
+    private void OnEditClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_tree.SelectedItem is SessionTreeNode { Tag: SessionDefinition def })
+            SessionEditRequested?.Invoke(this, def);
+    }
 
     private void RebuildTree()
     {

@@ -1,6 +1,38 @@
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 namespace TermThing.Sessions;
+
+// ---------------------------------------------------------------------------
+// Jump-host support
+// ---------------------------------------------------------------------------
+
+/// <summary>Whether a jump hop is defined by reference to a saved session or inline.</summary>
+public enum JumpHostKind { SessionRef, Inline }
+
+/// <summary>
+/// One hop in a jump-host chain. Either references an existing saved SSH session
+/// by <see cref="SessionId"/>, or carries its own inline connection details.
+/// Secrets are never persisted — they are prompted at connect time if needed.
+/// </summary>
+public sealed class JumpHost
+{
+    public JumpHostKind Kind { get; set; } = JumpHostKind.Inline;
+
+    // --- SessionRef fields ---
+    /// <summary>Id of the saved SSH <see cref="SessionDefinition"/> to use as this hop.</summary>
+    public Guid? SessionId { get; set; }
+
+    // --- Inline fields ---
+    public string Host     { get; set; } = string.Empty;
+    public int    Port     { get; set; } = 22;
+    public string Username { get; set; } = string.Empty;
+    public string? KeyFilePath { get; set; }
+
+    // Secrets — never persisted.
+    [JsonIgnore] public string? TransientPassword       { get; set; }
+    [JsonIgnore] public string? TransientKeyPassphrase  { get; set; }
+}
 
 // ---------------------------------------------------------------------------
 // Per-kind settings (polymorphic; serialised as part of SessionDefinition)
@@ -28,6 +60,12 @@ public record SshSettings : SessionSettings
     public bool EnableSftp { get; init; }
     public bool ShellIntegrationOsc7 { get; init; } = true;
     public string Term { get; init; } = "xterm-256color";
+
+    /// <summary>
+    /// Ordered list of jump hops through which this session is routed.
+    /// Empty (default) means a direct connection.
+    /// </summary>
+    public List<JumpHost> JumpHosts { get; init; } = [];
 
     // Secrets are never persisted — always prompted at connect time.
     [JsonIgnore] public string? TransientPassword { get; set; }

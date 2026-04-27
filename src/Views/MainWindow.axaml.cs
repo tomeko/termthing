@@ -49,7 +49,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         InitializeComponent();
 
         _registry.Register(new LocalSessionLauncher());
-        _registry.Register(new SshSessionLauncher(_knownHosts));
+        _registry.Register(new SshSessionLauncher(_knownHosts, () => _config));
         _registry.Register(new SerialSessionLauncher());
 
         // Load both settings files
@@ -77,6 +77,7 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         SessionTree.SetRoot(_config.RootGroup);
         SessionTree.SessionLaunchRequested += OnSessionLaunchRequested;
+        SessionTree.SessionEditRequested   += OnSessionEditRequestedAsync;
         SessionTree.TreeChanged += OnTreeChanged;
 
         // Restore layout from TempSettings once the window is loaded
@@ -132,10 +133,9 @@ public partial class MainWindow : Window, ISessionPromptHost
         return true;
     }
 
-    public Task<string?> PromptForPassphraseAsync(string keyFilePath)
+    public async Task<string?> PromptForPassphraseAsync(string keyFilePath, string? hostname = null)
     {
         var fileName = System.IO.Path.GetFileName(keyFilePath);
-        var tcs = new TaskCompletionSource<string?>();
 
         var passBox = new TextBox
         {
@@ -149,7 +149,7 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         var win = new Window
         {
-            Title = "Key Passphrase",
+            Title = string.IsNullOrWhiteSpace(hostname) ? "Key Passphrase" : $"Key Passphrase — {hostname}",
             Width = 380,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -185,31 +185,17 @@ public partial class MainWindow : Window, ISessionPromptHost
             },
         };
 
-        void Confirm()
-        {
-            tcs.TrySetResult(passBox.Text ?? string.Empty);
-            win.Close();
-        }
-        void Cancel()
-        {
-            tcs.TrySetResult(null);
-            win.Close();
-        }
+        okBtn.Click     += (_, _) => win.Close(passBox.Text ?? string.Empty);
+        cancelBtn.Click += (_, _) => win.Close(null);
 
-        okBtn.Click     += (_, _) => Confirm();
-        cancelBtn.Click += (_, _) => Cancel();
-
-        // Enter in the passphrase box confirms
         passBox.KeyDown += (_, e) =>
         {
-            if (e.Key == Avalonia.Input.Key.Enter) { e.Handled = true; Confirm(); }
+            if (e.Key == Avalonia.Input.Key.Enter) { e.Handled = true; win.Close(passBox.Text ?? string.Empty); }
         };
 
-        win.Opened  += (_, _) => passBox.Focus();
-        win.Closing += (_, _) => tcs.TrySetResult(null);
+        win.Opened += (_, _) => passBox.Focus();
 
-        win.ShowDialog(this);
-        return tcs.Task;
+        return await win.ShowDialog<string?>(this);
     }
 
     // -----------------------------------------------------------------------
@@ -342,6 +328,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             EnableSftp = dialog.EnableSftp,
             TransientPassword = dialog.Password,
             TransientKeyPassphrase = dialog.KeyPassphrase,
+            JumpHosts = [.. dialog.JumpHosts],
         };
 
         var sessionName = string.IsNullOrWhiteSpace(dialog.SessionName)
@@ -458,6 +445,36 @@ public partial class MainWindow : Window, ISessionPromptHost
         {
             _launching.Remove(def.Id);
         }
+    }
+
+    private async void OnSessionEditRequestedAsync(object? sender, SessionDefinition def)
+    {
+        if (def.Kind != SessionKind.Ssh || def.Settings is not SshSettings sshSettings) return;
+
+        var dialog = new SshConnectDialog(
+            editMode  : true,
+            prefill   : sshSettings,
+            appConfig : _config);
+
+        var result = await dialog.ShowDialog<bool?>(this);
+        if (result != true) return;
+
+        var updated = sshSettings with
+        {
+            Host        = dialog.Host        ?? sshSettings.Host,
+            Port        = dialog.Port,
+            Username    = dialog.Username    ?? sshSettings.Username,
+            KeyFilePath = dialog.KeyFile,
+            EnableSftp  = dialog.EnableSftp,
+            JumpHosts   = [.. dialog.JumpHosts],
+        };
+
+        if (!string.IsNullOrWhiteSpace(dialog.SessionName))
+            def.Name = dialog.SessionName;
+
+        def.Settings = updated;
+        SessionTree.SetRoot(_config.RootGroup);
+        SaveConfig();
     }
 
     private void OnTreeChanged(object? sender, EventArgs e)

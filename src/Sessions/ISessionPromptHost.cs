@@ -17,7 +17,8 @@ public interface ISessionPromptHost
 
     /// <summary>
     /// Shows a minimal passphrase-only prompt for an encrypted private key.
+    /// <paramref name="hostname"/> is shown in the dialog title when provided.
     /// Returns the passphrase string, or <c>null</c> if the user cancelled.
     /// </summary>
-    Task<string?> PromptForPassphraseAsync(string keyFilePath);
+    Task<string?> PromptForPassphraseAsync(string keyFilePath, string? hostname = null);
 }
