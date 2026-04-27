@@ -7,15 +7,21 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Renci.SshNet;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using TermThing.Configuration;
 using TermThing.Sftp;
 
 namespace TermThing.Views;
 
-public sealed class SftpEntry
+public sealed class SftpEntry : INotifyPropertyChanged
 {
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
     public bool IsDirectory { get; init; }
     public bool IsParentLink { get; init; }
     public string Name { get; init; } = string.Empty;
@@ -25,6 +31,13 @@ public sealed class SftpEntry
     public string Permissions { get; init; } = string.Empty;
     public int OwnerId { get; init; }
     public int GroupId { get; init; }
+
+    private bool _isDropTarget;
+    public bool IsDropTarget
+    {
+        get => _isDropTarget;
+        set { if (_isDropTarget != value) { _isDropTarget = value; OnPropertyChanged(); } }
+    }
 
     public string TypeIcon
     {
@@ -86,12 +99,16 @@ public partial class SftpFileBrowserView : UserControl
     private MenuItem _menuDelete = null!;
     private MenuItem _menuProperties = null!;
     private TransferProgressOverlay _transferOverlay = null!;
+    private Border _dropOverlay = null!;
 
-    // Drag-out state — removed: Avalonia DoDragDrop requires a live pointer event,
-    // which is gone after an async file download. Use "Download…" context menu instead.
+    // Upload drag state
+    private SftpEntry? _dropTargetDir;  // folder row being hovered (null = whole view)
 
-    // Drop-highlight state
-    private SftpEntry? _dropTargetDir; // null = whole view
+    // Drag-to-download state
+    private SftpEntry? _dragOutPending;  // entry the user started dragging
+    private Point _dragOutStartPos;
+    private PointerEventArgs? _dragOutPointerArgs;
+    private bool _dragOutInProgress;
 
     private string? _lastTerminalDir;
 
@@ -115,6 +132,7 @@ public partial class SftpFileBrowserView : UserControl
         _menuDelete     = this.FindControl<MenuItem>("MenuDelete")!;
         _menuProperties = this.FindControl<MenuItem>("MenuProperties")!;
         _transferOverlay       = this.FindControl<TransferProgressOverlay>("TransferOverlay")!;
+        _dropOverlay           = this.FindControl<Border>("DropOverlay")!;
 
         _filesGrid.ItemsSource = Entries;
 
@@ -126,11 +144,16 @@ public partial class SftpFileBrowserView : UserControl
         _transferQueue.QueueEmpty += (_, _) =>
             Dispatcher.UIThread.Post(Refresh);
 
-        // Set up drag/drop
+        // Set up drop (upload from OS → SFTP)
         DragDrop.SetAllowDrop(this, true);
         AddHandler(DragDrop.DragOverEvent,  OnDragOver);
         AddHandler(DragDrop.DragLeaveEvent, OnDragLeave);
         AddHandler(DragDrop.DropEvent,      OnDrop);
+
+        // Set up drag-out (download SFTP → OS)
+        _filesGrid.AddHandler(PointerPressedEvent,  OnFilesGridPointerPressed,  RoutingStrategies.Tunnel);
+        _filesGrid.AddHandler(PointerMovedEvent,    OnFilesGridPointerMoved,    RoutingStrategies.Tunnel);
+        _filesGrid.AddHandler(PointerReleasedEvent, OnFilesGridPointerReleased, RoutingStrategies.Tunnel);
 
         // Restore persisted column widths
         RestoreColumnWidths();
@@ -613,6 +636,36 @@ public partial class SftpFileBrowserView : UserControl
     // Drop / Upload (OS → SFTP)
     // -----------------------------------------------------------------------
 
+    private void OnFilesGridLoadingRow(object? sender, DataGridRowEventArgs e)
+    {
+        // Keep the dropTarget CSS class in sync when rows are recycled
+        if (e.Row.DataContext is SftpEntry entry)
+            e.Row.Classes.Set("dropTarget", entry == _dropTargetDir);
+    }
+
+    private void SetDropHighlight(SftpEntry? newTarget)
+    {
+        // Clear old highlight
+        if (_dropTargetDir != null)
+        {
+            var oldRow = _filesGrid.GetVisualDescendants()
+                                   .OfType<DataGridRow>()
+                                   .FirstOrDefault(r => r.DataContext == _dropTargetDir);
+            oldRow?.Classes.Set("dropTarget", false);
+        }
+
+        _dropTargetDir = newTarget;
+
+        // Apply new highlight
+        if (newTarget != null)
+        {
+            var newRow = _filesGrid.GetVisualDescendants()
+                                   .OfType<DataGridRow>()
+                                   .FirstOrDefault(r => r.DataContext == newTarget);
+            newRow?.Classes.Set("dropTarget", true);
+        }
+    }
+
     private void OnDragOver(object? sender, DragEventArgs e)
     {
         e.Handled = true;
@@ -621,33 +674,70 @@ public partial class SftpFileBrowserView : UserControl
 #pragma warning restore CS0618
         {
             e.DragEffects = DragDropEffects.None;
+            ClearUploadDragState();
             return;
         }
 
         e.DragEffects = DragDropEffects.Copy;
 
-        _dropTargetDir = null;
         var rowEntry = GetEntryUnderNameColumn(e.GetPosition(_filesGrid));
-        if (rowEntry != null)
-            _dropTargetDir = rowEntry;
+        SetDropHighlight(rowEntry);
+
+        // Show whole-grid overlay only when not hovering a specific folder
+        _dropOverlay.IsVisible = (rowEntry == null);
     }
 
     private void OnDragLeave(object? sender, RoutedEventArgs e)
     {
-        _dropTargetDir = null;
+        ClearUploadDragState();
+    }
+
+    private void ClearUploadDragState()
+    {
+        SetDropHighlight(null);
+        _dropOverlay.IsVisible = false;
     }
 
     private async void OnDrop(object? sender, DragEventArgs e)
     {
         var destDir = _dropTargetDir?.FullPath ?? _currentPath;
-        _dropTargetDir = null;
+        ClearUploadDragState();
 
 #pragma warning disable CS0618
         if (!e.Data.Contains(DataFormats.Files)) return;
-        var files = e.Data.GetFiles();
+        var storageItems = e.Data.GetFiles()?.ToList();
 #pragma warning restore CS0618
-        if (files == null) return;
+        if (storageItems == null || storageItems.Count == 0) return;
 
+        // Resolve to local file system paths
+        var localPaths = new List<string>();
+        foreach (var item in storageItems)
+        {
+            var lp = item.Path.IsAbsoluteUri && item.Path.Scheme == "file"
+                ? item.Path.LocalPath
+                : item.Path.ToString();
+            if (!string.IsNullOrWhiteSpace(lp))
+                localPaths.Add(lp);
+        }
+        if (localPaths.Count == 0) return;
+
+        // Local-only scan: count files and compute size for the confirmation prompt
+        var preview = new List<TransferJob>();
+        await Task.Run(() =>
+        {
+            foreach (var lp in localPaths)
+                ScanLocalUpload(lp, destDir, preview);
+        });
+
+        if (preview.Count == 0) return;
+
+        // Confirmation
+        var host = TopLevel.GetTopLevel(this) as Window;
+        var confirmed = await ShowUploadConfirmAsync(
+            preview.Count, preview.Sum(j => j.TotalBytes), destDir, host);
+        if (!confirmed) return;
+
+        // Check write permission
         var canWrite = await Task.Run(() => ProbeWriteAccess(destDir));
         if (!canWrite)
         {
@@ -655,27 +745,112 @@ public partial class SftpFileBrowserView : UserControl
             return;
         }
 
+        // Build jobs (creates remote directories as a side-effect)
         var jobs = new List<TransferJob>();
-        foreach (var file in files)
+        await Task.Run(() =>
         {
-            var localPath = file.Path.IsAbsoluteUri && file.Path.Scheme == "file"
-                ? file.Path.LocalPath
-                : file.Path.ToString();
-            if (string.IsNullOrWhiteSpace(localPath)) continue;
-
-            BuildUploadJobs(localPath, destDir, jobs);
-        }
+            foreach (var lp in localPaths)
+                BuildUploadJobs(lp, destDir, jobs);
+        });
 
         if (jobs.Count == 0) return;
-
         _transferQueue.Enqueue(jobs);
+    }
+
+    /// <summary>
+    /// Pure local scan — no remote operations. Builds a job list used only for
+    /// counting and size display in the confirmation prompt.
+    /// </summary>
+    private static void ScanLocalUpload(string localPath, string remoteDir, List<TransferJob> jobs)
+    {
+        localPath = localPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        if (Directory.Exists(localPath))
+        {
+            var dirName = Path.GetFileName(localPath);
+            if (string.IsNullOrEmpty(dirName)) return; // skip drive roots like C:\
+            var remoteSubDir = remoteDir.TrimEnd('/') + "/" + dirName;
+            foreach (var child in Directory.EnumerateFileSystemEntries(localPath))
+                ScanLocalUpload(child, remoteSubDir, jobs);
+        }
+        else if (File.Exists(localPath))
+        {
+            var info = new FileInfo(localPath);
+            jobs.Add(new TransferJob
+            {
+                IsUpload   = true,
+                LocalPath  = localPath,
+                RemotePath = remoteDir.TrimEnd('/') + "/" + Path.GetFileName(localPath),
+                TotalBytes = info.Length,
+            });
+        }
+    }
+
+    private static async Task<bool> ShowUploadConfirmAsync(
+        int fileCount, long totalBytes, string destPath, Window? owner)
+    {
+        bool confirmed = false;
+
+        var sizeStr = totalBytes switch
+        {
+            >= 1_073_741_824 => $"{totalBytes / 1_073_741_824.0:F1} GB",
+            >= 1_048_576     => $"{totalBytes / 1_048_576.0:F1} MB",
+            >= 1_024         => $"{totalBytes / 1_024.0:F1} KB",
+            _                => $"{totalBytes} B",
+        };
+
+        var okBtn     = new Button { Content = "Upload", Margin = new Thickness(0, 0, 8, 0) };
+        var cancelBtn = new Button { Content = "Cancel" };
+
+        var win = new Window
+        {
+            Title  = "Confirm upload",
+            Width  = 400,
+            CanResize = false,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin  = new Thickness(16),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"Upload {fileCount} file{(fileCount != 1 ? "s" : "")} ({sizeStr}) to:\n{destPath}",
+                        TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { okBtn, cancelBtn },
+                    },
+                },
+            },
+        };
+
+        okBtn.Click     += (_, _) => { confirmed = true;  win.Close(); };
+        cancelBtn.Click += (_, _) => { confirmed = false; win.Close(); };
+
+        if (owner != null)
+            await win.ShowDialog(owner);
+        else
+            win.Show();
+
+        return confirmed;
     }
 
     private void BuildUploadJobs(string localPath, string remoteDir, List<TransferJob> jobs)
     {
+        // Normalize: strip trailing separators so Path.GetFileName works correctly for directories
+        localPath = localPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
         if (Directory.Exists(localPath))
         {
             var dirName = Path.GetFileName(localPath);
+            if (string.IsNullOrEmpty(dirName)) return; // skip drive roots like C:\
             var remoteSubDir = remoteDir.TrimEnd('/') + "/" + dirName;
             try { _sftpClient.CreateDirectory(remoteSubDir); } catch { /* already exists */ }
 
@@ -724,11 +899,31 @@ public partial class SftpFileBrowserView : UserControl
 
         if (hit?.DataContext is SftpEntry { IsDirectory: true, IsParentLink: false } entry)
         {
-            // Only highlight when the pointer is roughly over the Name column
-            // (column 1 starts after the icon column ~26 px wide)
-            if (posInGrid.X > 26)
+            // Highlight only when hovering the Name column specifically
+            // (icon column is ~26 px; Name column follows it at index 1)
+            var nameColWidth = _filesGrid.Columns.Count > 1 ? _filesGrid.Columns[1].ActualWidth : 180;
+            if (posInGrid.X > 26 && posInGrid.X <= 26 + nameColWidth)
                 return entry;
         }
+
+        return null;
+    }
+
+    private SftpEntry? GetEntryUnderPointer(Point posInGrid)
+    {
+        // Same as GetEntryUnderNameColumn but accepts any column position (for drag-out)
+        var hit = _filesGrid.GetVisualDescendants()
+                            .OfType<DataGridRow>()
+                            .FirstOrDefault(r =>
+                            {
+                                var bounds = r.TranslatePoint(new Point(0, 0), _filesGrid);
+                                if (bounds == null) return false;
+                                var rect = new Rect(bounds.Value, new Size(_filesGrid.Bounds.Width, r.Bounds.Height));
+                                return rect.Contains(posInGrid);
+                            });
+
+        if (hit?.DataContext is SftpEntry { IsParentLink: false } entry)
+            return entry;
 
         return null;
     }
@@ -746,6 +941,143 @@ public partial class SftpFileBrowserView : UserControl
         if (message is null) { _statusText.IsVisible = false; return; }
         _statusText.Text = message;
         _statusText.IsVisible = true;
+    }
+
+    // -----------------------------------------------------------------------
+    // Drag-out / Download (SFTP → OS)
+    // -----------------------------------------------------------------------
+
+    private const double DragThresholdPx = 5.0;
+
+    private void OnFilesGridPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_dragOutInProgress) return;
+
+        _dragOutPending     = null;
+        _dragOutPointerArgs = null;
+
+        var point = e.GetCurrentPoint(_filesGrid);
+        if (!point.Properties.IsLeftButtonPressed) return;
+
+        var pos   = e.GetPosition(_filesGrid);
+        var entry = GetEntryUnderPointer(pos);
+        if (entry == null) return;
+
+        _dragOutPending     = entry;
+        _dragOutStartPos    = pos;
+        _dragOutPointerArgs = e;
+    }
+
+    private void OnFilesGridPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_dragOutPending == null || _dragOutInProgress) return;
+
+        var point = e.GetCurrentPoint(_filesGrid);
+        if (!point.Properties.IsLeftButtonPressed)
+        {
+            _dragOutPending     = null;
+            _dragOutPointerArgs = null;
+            return;
+        }
+
+        var pos  = e.GetPosition(_filesGrid);
+        var dx   = pos.X - _dragOutStartPos.X;
+        var dy   = pos.Y - _dragOutStartPos.Y;
+        if (Math.Sqrt(dx * dx + dy * dy) < DragThresholdPx) return;
+
+        // Threshold exceeded — start the drag
+        var entry           = _dragOutPending;
+        _dragOutPending     = null;
+        _dragOutPointerArgs = null;
+        _dragOutInProgress  = true;
+
+        _ = InitiateDragDownloadAsync(entry, e);
+    }
+
+    private void OnFilesGridPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        _dragOutPending     = null;
+        _dragOutPointerArgs = null;
+        // _dragOutInProgress is reset by InitiateDragDownloadAsync after completion
+    }
+
+    private async Task InitiateDragDownloadAsync(SftpEntry entry, PointerEventArgs pointerArgs)
+    {
+        try
+        {
+            SetStatus("Preparing download…");
+
+            // Download to a per-entry temp directory so the OS gets a real local file path
+            var sessionTemp = Path.Combine(
+                Path.GetTempPath(), "termthing", "dragout",
+                Guid.NewGuid().ToString("N"));
+
+            string localPath;
+            try
+            {
+                localPath = await Task.Run(() =>
+                {
+                    Directory.CreateDirectory(sessionTemp);
+                    return DownloadToTempSync(entry, sessionTemp);
+                });
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Drag-out download failed: {ex.Message}");
+                return;
+            }
+
+            SetStatus(null);
+
+            // Verify the pointer is still pressed before handing off to DoDragDrop
+            var pt = pointerArgs.GetCurrentPoint(_filesGrid);
+            if (!pt.Properties.IsLeftButtonPressed)
+                return;
+
+            var dataObj = new DataObject();
+#pragma warning disable CS0618
+            dataObj.Set(DataFormats.FileNames, new[] { localPath });
+            await DragDrop.DoDragDrop(pointerArgs, dataObj, DragDropEffects.Copy);
+#pragma warning restore CS0618
+        }
+        finally
+        {
+            _dragOutInProgress = false;
+        }
+    }
+
+    /// <summary>
+    /// Synchronously downloads <paramref name="entry"/> (file or directory tree) into
+    /// <paramref name="destDir"/> and returns the path of the created local item.
+    /// Must be called on a background thread.
+    /// </summary>
+    private string DownloadToTempSync(SftpEntry entry, string destDir)
+    {
+        var localPath = Path.Combine(destDir, entry.Name);
+
+        if (entry.IsDirectory)
+        {
+            Directory.CreateDirectory(localPath);
+            foreach (var child in _sftpClient.ListDirectory(entry.FullPath))
+            {
+                if (child.Name == "." || child.Name == "..") continue;
+                var childEntry = new SftpEntry
+                {
+                    IsDirectory = child.IsDirectory,
+                    Name        = child.Name,
+                    FullPath    = child.FullName,
+                    Size        = child.Length,
+                };
+                DownloadToTempSync(childEntry, localPath);
+            }
+        }
+        else
+        {
+            using var fs = File.Create(localPath);
+            _sftpClient.DownloadFile(entry.FullPath, fs);
+        }
+
+        return localPath;
     }
 
     private static string BuildPermissionString(Renci.SshNet.Sftp.ISftpFile f)

@@ -13,6 +13,13 @@
         <Style Selector="DataGridCell:current /template/ Rectangle#CurrencyVisual">
             <Setter Property="IsVisible" Value="False"/>
         </Style>
+        <!-- Drop-target row highlight: applied when IsDropTarget is True on the entry -->
+        <Style Selector="DataGridRow">
+            <Setter Property="Background" Value="Transparent"/>
+        </Style>
+        <Style Selector="DataGridRow.dropTarget">
+            <Setter Property="Background" Value="#552196F3"/>
+        </Style>
     </UserControl.Styles>
 
     <DockPanel>
@@ -43,6 +50,8 @@
                    TextTrimming="CharacterEllipsis"
                    IsVisible="False"/>
 
+        <!-- Grid wraps DataGrid + drag-upload overlay (fills remaining DockPanel space) -->
+        <Grid>
         <DataGrid x:Name="FilesGrid"
                   CanUserSortColumns="True"
                   CanUserResizeColumns="True"
@@ -51,6 +60,7 @@
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column"
                   FontSize="12"
+                  LoadingRow="OnFilesGridLoadingRow"
                   DoubleTapped="OnFilesGridDoubleTapped">
             <DataGrid.ContextMenu>
                 <ContextMenu Opening="OnContextMenuOpening">
@@ -84,5 +94,19 @@
                 <DataGridTextColumn Header="" Width="*" CanUserSort="False" CanUserResize="False" IsReadOnly="True"/>
             </DataGrid.Columns>
         </DataGrid>
+
+        <!-- Semi-transparent blue overlay shown when dragging files from OS over the non-folder area -->
+        <Border x:Name="DropOverlay"
+                Background="#402196F3"
+                IsHitTestVisible="False"
+                IsVisible="False">
+            <TextBlock Text="+"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       FontSize="64"
+                       Foreground="#A02196F3"
+                       FontWeight="Bold"/>
+        </Border>
+        </Grid>
     </DockPanel>
 </UserControl>

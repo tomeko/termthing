@@ -8,10 +8,15 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <IsPackable>false</IsPackable>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <ApplicationIcon>Assets\tt_ico2.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\tt_ico2.ico" />
   </ItemGroup>
 
   <ItemGroup>
