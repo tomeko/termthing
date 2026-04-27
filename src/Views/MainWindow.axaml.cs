@@ -37,6 +37,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         public required SessionDefinition Def { get; init; }
         public ISessionInstance? Instance { get; set; }
         public SessionEndedOverlay? Overlay { get; set; }
+        public FloatingSessionWindow? FloatingWindow { get; set; }
     }
 
     // Provides access to the named grid for column-width persistence
@@ -557,6 +558,17 @@ public partial class MainWindow : Window, ISessionPromptHost
             Margin = new Thickness(0, 0, 6, 0),
         };
 
+        var popOutButton = new Button
+        {
+            Content = "⤢",
+            Padding = new Thickness(2, 0, 2, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Margin = new Thickness(0, 0, 4, 0),
+        };
+        ToolTip.SetTip(popOutButton, "Float in separate window");
+
         var closeButton = new Button
         {
             Content = "×",
@@ -569,7 +581,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         var header = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Children = { titleBlock, closeButton },
+            Children = { titleBlock, popOutButton, closeButton },
         };
 
         // Wrap the terminal in a Panel so we can layer the disconnect overlay on top.
@@ -593,6 +605,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         _tabStates[tab] = state;
 
         WireSessionInstance(state, instance);
+        popOutButton.Click += (_, _) => PopOutTab(tab);
         closeButton.Click += (_, _) => CloseTab(tab);
 
         TerminalTabs.Items.Add(tab);
@@ -705,8 +718,105 @@ public partial class MainWindow : Window, ISessionPromptHost
         _tabStates.Remove(tab);
         state.Instance?.Kill();
         state.Instance?.Dispose();
+
+        // If the session is floating, force-close the floating window without docking back.
+        if (state.FloatingWindow != null)
+        {
+            state.FloatingWindow.ForceClose();
+            state.FloatingWindow = null;
+        }
+
         TerminalTabs.Items.Remove(tab);
         ClearSftpPanelIfNeeded(tab);
+    }
+
+    /// <summary>
+    /// Removes the tab from the main strip and opens it as an independent floating window.
+    /// </summary>
+    private void PopOutTab(TabItem tab)
+    {
+        if (!_tabStates.TryGetValue(tab, out var state)) return;
+        if (state.FloatingWindow != null) return; // already floating
+
+        // Tell the terminal control not to kill the PTY on detach.
+        if (state.Instance?.TabContent is TerminalControl tcOut)
+            tcOut.BeginReparent();
+
+        // Detach content from the TabItem so the host Panel can be re-parented.
+        tab.Content = null;
+        TerminalTabs.Items.Remove(tab);
+
+        // If this session's SFTP panel was visible in the main window, replace it with
+        // the placeholder so the left pane doesn't hold a stale reference.
+        if (state.Instance?.SftpPanel != null &&
+            SftpPanelHost?.Content == state.Instance.SftpPanel)
+        {
+            SftpPanelHost.Content = new TextBlock
+            {
+                Text = "No SFTP session active",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Brushes.Gray,
+                FontSize = 11,
+            };
+            if (LeftTabs?.SelectedIndex == 1)
+                LeftTabs.SelectedIndex = 0;
+        }
+
+        var win = new FloatingSessionWindow(
+            state.Host,
+            state.Instance?.SftpPanel,
+            state.TitleBlock,
+            () => DockBackSession(state),
+            () => CloseTab(state.Tab))
+        {
+            Width = Bounds.Width,
+            Height = Bounds.Height,
+        };
+
+        state.FloatingWindow = win;
+        win.Show();
+
+        // EndReparent after the control has been re-attached to the new visual tree.
+        if (state.Instance?.TabContent is TerminalControl tcEnd)
+            Dispatcher.UIThread.Post(() => tcEnd.EndReparent(), DispatcherPriority.Loaded);
+    }
+
+    /// <summary>
+    /// Moves a floating session back into the main tab strip.
+    /// Called from <see cref="FloatingSessionWindow"/> via a delegate.
+    /// </summary>
+    private void DockBackSession(TabState state)
+    {
+        var win = state.FloatingWindow;
+        if (win == null) return;
+
+        // Tell the terminal control not to kill the PTY on detach from the floating window.
+        if (state.Instance?.TabContent is TerminalControl tcIn)
+            tcIn.BeginReparent();
+
+        // Detach hosted controls from the floating window before re-parenting.
+        win.DetachContents();
+
+        // Restore the Tab's content and add it back to the main strip.
+        state.Tab.Content = state.Host;
+        state.FloatingWindow = null;
+
+        TerminalTabs.Items.Add(state.Tab);
+        TerminalTabs.SelectedItem = state.Tab;
+
+        // Close the floating window. _isDocking is already true so Closing won't
+        // trigger a second dock-back.
+        win.Close();
+
+        // EndReparent after re-attachment.
+        if (state.Instance?.TabContent is TerminalControl tcDone)
+            Dispatcher.UIThread.Post(() => tcDone.EndReparent(), DispatcherPriority.Loaded);
+
+        // OnTabSelectionChanged fires and restores the SFTP panel if applicable.
+        // Also focus the terminal.
+        if (state.Instance?.TabContent is { } tc)
+            FocusTerminal(tc);
     }
 
     private static void FocusTerminal(Control terminal)

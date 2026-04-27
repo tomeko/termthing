@@ -1,0 +1,51 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.FloatingSessionWindow"
+        Title="Session"
+        RequestedThemeVariant="Dark"
+        Width="900" Height="600"
+        WindowStartupLocation="CenterScreen">
+
+    <DockPanel>
+
+        <!-- Toolbar: session title + Dock Back button -->
+        <Grid DockPanel.Dock="Top"
+              Background="#1e1e1e"
+              ColumnDefinitions="*,Auto"
+              Margin="8,4">
+            <TextBlock x:Name="TitleText"
+                       Grid.Column="0"
+                       VerticalAlignment="Center"
+                       Foreground="#cccccc"
+                       FontSize="13"/>
+            <Button x:Name="DockBackButton"
+                    Grid.Column="1"
+                    Content="⤵ Dock Back"
+                    Padding="8,3"/>
+        </Grid>
+
+        <!-- Content area: optional SFTP panel | splitter | terminal -->
+        <Grid x:Name="ContentGrid" ColumnDefinitions="260,4,*">
+
+            <!-- SFTP panel — hidden by default, shown when session has SFTP -->
+            <ContentControl x:Name="SftpHost"
+                            Grid.Column="0"
+                            IsVisible="False"
+                            Background="#252526"/>
+
+            <GridSplitter x:Name="SftpSplitter"
+                          Grid.Column="1"
+                          Background="#444"
+                          Width="4"
+                          IsVisible="False"
+                          ResizeDirection="Columns"
+                          DragCompleted="OnSftpSplitterDragCompleted"/>
+
+            <!-- Terminal host -->
+            <ContentControl x:Name="TerminalHost"
+                            Grid.Column="2"/>
+        </Grid>
+
+    </DockPanel>
+
+</Window>

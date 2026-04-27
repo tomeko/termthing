@@ -23,7 +23,12 @@
     <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.0.4" />
     <PackageReference Include="Fonts.Avalonia.CascadiaCode" Version="0.14.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <PackageReference Include="Iciclecreek.Avalonia.Terminal" Version="1.0.11" />
     <PackageReference Include="SSH.NET" Version="2024.2.0" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Local fork of Iciclecreek.Avalonia.Terminal with re-parenting support -->
+    <ProjectReference Include="..\Iciclecreek.Avalonia.Terminal\src\Iciclecreek.Avalonia.TerminalWindow\Iciclecreek.Avalonia.Terminal.csproj" />
+  </ItemGroup>
+
 </Project>
