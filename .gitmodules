@@ -1,0 +1,3 @@
+[submodule "Iciclecreek.Avalonia.Terminal"]
+	path = Iciclecreek.Avalonia.Terminal
+	url = https://github.com/tomeko/Iciclecreek.Avalonia.Terminal.git
