@@ -94,8 +94,11 @@ public partial class TextEditorWindow : Window
             Command = new DelegateCommand(async () => await SaveAsync()),
         });
 
-        // Ctrl+Wheel — zoom font size
-        _editor.PointerWheelChanged += OnEditorPointerWheelChanged;
+        // Ctrl+Wheel — zoom font size.
+        // Use Tunnel (preview) strategy so we intercept before the inner
+        // ScrollViewer handles the wheel event for scrolling.
+        _editor.AddHandler(InputElement.PointerWheelChangedEvent,
+            OnEditorPointerWheelChanged, RoutingStrategies.Tunnel);
 
         Closing += OnWindowClosing;
     }
@@ -238,7 +241,7 @@ public partial class TextEditorWindow : Window
         }
     }
 
-    private void OnEditorPointerWheelChanged(object? sender, Avalonia.Input.PointerWheelEventArgs e)
+    private void OnEditorPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
         if (!e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
         e.Handled = true;

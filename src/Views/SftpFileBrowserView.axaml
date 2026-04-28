@@ -65,7 +65,7 @@
             <DataGrid.ContextMenu>
                 <ContextMenu Opening="OnContextMenuOpening">
                     <MenuItem x:Name="MenuOpen"       Header="Open"          Click="OnMenuOpenClicked"/>
-                    <MenuItem x:Name="MenuDownloadTo" Header="Download to ▶"/>
+                    <MenuItem x:Name="MenuDownloadTo" Header="Download to "/>
                     <MenuItem x:Name="MenuDelete"     Header="Delete"        Click="OnMenuDeleteClicked"/>
                     <Separator/>
                     <MenuItem x:Name="MenuProperties" Header="Properties"    Click="OnMenuPropertiesClicked"/>
@@ -78,7 +78,9 @@
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <TextBlock Text="{Binding TypeIcon}" Width="22" TextAlignment="Center"
-                                       VerticalAlignment="Center" FontSize="13" Padding="0"/>
+                                       VerticalAlignment="Center" FontSize="13" Padding="0"
+                                       Foreground="{Binding IconForeground}"
+                                       Opacity="{Binding IconOpacity}"/>
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                 </DataGridTemplateColumn>

@@ -33,6 +33,16 @@ public sealed class SftpEntry : INotifyPropertyChanged
     public int OwnerId { get; init; }
     public int GroupId { get; init; }
 
+    public bool IsHidden => !IsParentLink && Name.StartsWith('.');
+
+    // Yellow tint for folders, inherited foreground (white in dark theme) for everything else.
+    public IBrush IconForeground => IsDirectory && !IsParentLink
+        ? new SolidColorBrush(Color.FromRgb(255, 198, 64))
+        : Brushes.White;
+
+    // Dim hidden entries (dotfiles/dotdirs) to 50% opacity.
+    public double IconOpacity => IsHidden ? 0.5 : 1.0;
+
     private bool _isDropTarget;
     public bool IsDropTarget
     {
