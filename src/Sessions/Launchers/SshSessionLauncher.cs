@@ -19,12 +19,14 @@ public sealed class SshSessionLauncher : ISessionLauncher
     private readonly IKnownHostsService _knownHosts;
     private readonly Func<AppConfig> _getConfig;
     private readonly EditorRegistry? _editors;
+    private readonly Action? _saveConfig;
 
-    public SshSessionLauncher(IKnownHostsService knownHosts, Func<AppConfig> getConfig, EditorRegistry? editors = null)
+    public SshSessionLauncher(IKnownHostsService knownHosts, Func<AppConfig> getConfig, EditorRegistry? editors = null, Action? saveConfig = null)
     {
         _knownHosts = knownHosts;
         _getConfig  = getConfig;
         _editors    = editors;
+        _saveConfig = saveConfig;
     }
 
     public SessionKind Kind => SessionKind.Ssh;
@@ -208,12 +210,12 @@ public sealed class SshSessionLauncher : ISessionLauncher
         {
             var tcs = new TaskCompletionSource<bool>();
             tc.Loaded += (_, _) => tcs.TrySetResult(true);
-            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors);
+            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors, definition, _saveConfig);
             _ = CompleteConnectionAsync(tc, client, sftpClient, settings, tcs.Task, instance);
             return instance;
         }
 
-        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors);
+        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors, definition, _saveConfig);
         await CompleteConnectionAsync(tc, client, sftpClient, settings, Task.CompletedTask, loadedInstance);
         return loadedInstance;
     }
@@ -232,6 +234,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
         var shellSw = Stopwatch.StartNew();
         var shell = client.CreateShellStream(settings.Term, cols, rows, 0, 0, 0x10000);
         Debug.WriteLine($"[SSH] CreateShellStream: {shellSw.ElapsedMilliseconds}ms");
+        instance.SetShellCommand(line => shell.WriteLine(line));
         var connection = new SshPtyConnection(client, shell);
         instance.OnPtyConnectionReady(connection);
         await tc.AttachConnection(connection);
@@ -274,7 +277,9 @@ internal sealed class SshSessionInstance : ISessionInstance
         SftpClient?      sftpClient,
         Task?            sftpConnectTask = null,
         SshChainResult?  chain           = null,
-        EditorRegistry?  editors         = null)
+        EditorRegistry?  editors         = null,
+        SessionDefinition? definition    = null,
+        Action?          saveConfig      = null)
     {
         _chain = chain;
         _tc = tc;
@@ -284,7 +289,7 @@ internal sealed class SshSessionInstance : ISessionInstance
 
         if (sftpClient != null)
         {
-            _sftpView = new SftpFileBrowserView(sftpClient, client, editors);
+            _sftpView = new SftpFileBrowserView(sftpClient, client, editors, definition, saveConfig);
 
             // Navigate to home directory once the SFTP handshake completes.
             // sftpConnectTask may already be completed (synchronous path) or still
@@ -322,6 +327,15 @@ internal sealed class SshSessionInstance : ISessionInstance
             _sftpClient?.Dispose();
             Dispatcher.UIThread.Post(() => SessionEnded?.Invoke(this, EventArgs.Empty));
         };
+    }
+
+    /// <summary>
+    /// Called from <see cref="SshSessionLauncher.CompleteConnectionAsync"/> once the
+    /// shell stream is created. Enables bookmark activation to inject <c>cd</c> commands.
+    /// </summary>
+    internal void SetShellCommand(Action<string> sendCommand)
+    {
+        _sftpView?.SetShellCommand(sendCommand);
     }
 
     public Control TabContent => _tc;

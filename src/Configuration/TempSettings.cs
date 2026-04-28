@@ -91,4 +91,14 @@ public sealed class TempSettings
     /// Missing keys default to <c>true</c> (expanded) — ensures auto-expand on first run.
     /// </summary>
     public Dictionary<Guid, bool> SessionTreeExpansion { get; set; } = [];
+
+    // -----------------------------------------------------------------------
+    // SFTP Bookmarks panel
+    // -----------------------------------------------------------------------
+
+    /// <summary>Whether the bookmarks panel is expanded.</summary>
+    public bool BookmarksExpanded { get; set; } = false;
+
+    /// <summary>Height (pixels) of the bookmarks body when expanded.</summary>
+    public double BookmarksHeightPx { get; set; } = 160;
 }

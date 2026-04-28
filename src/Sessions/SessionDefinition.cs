@@ -35,6 +35,21 @@ public sealed class JumpHost
 }
 
 // ---------------------------------------------------------------------------
+// Bookmark — a pinned absolute remote folder path stored per SSH session
+// ---------------------------------------------------------------------------
+
+/// <summary>
+/// A pinned remote folder path shown in the SFTP bookmarks panel.
+/// <see cref="Name"/> defaults to <see cref="AbsolutePath"/> but can be
+/// customised by the user via the rename context-menu action.
+/// </summary>
+public sealed record Bookmark
+{
+    public string Name { get; init; } = string.Empty;
+    public string AbsolutePath { get; init; } = string.Empty;
+}
+
+// ---------------------------------------------------------------------------
 // Per-kind settings (polymorphic; serialised as part of SessionDefinition)
 // ---------------------------------------------------------------------------
 
@@ -66,6 +81,9 @@ public record SshSettings : SessionSettings
     /// Empty (default) means a direct connection.
     /// </summary>
     public List<JumpHost> JumpHosts { get; init; } = [];
+
+    /// <summary>Pinned remote folder paths shown in the SFTP bookmarks panel.</summary>
+    public List<Bookmark> Bookmarks { get; init; } = [];
 
     // Secrets are never persisted — always prompted at connect time.
     [JsonIgnore] public string? TransientPassword { get; set; }

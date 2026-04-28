@@ -4,8 +4,11 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.Controls.Primitives;
+using Avalonia.Layout;
 using Avalonia.VisualTree;
 using Renci.SshNet;
+using TermThing.Sessions;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -117,8 +120,17 @@ public partial class SftpFileBrowserView : UserControl
     private MenuItem _menuDownloadTo = null!;
     private MenuItem _menuDelete = null!;
     private MenuItem _menuProperties = null!;
+    private MenuItem _menuBookmarkFolder = null!;
     private TransferProgressOverlay _transferOverlay = null!;
     private Border _dropOverlay = null!;
+
+    // Bookmark panel controls
+    private Grid _mainContentGrid = null!;
+    private GridSplitter _bookmarkSplitter = null!;
+    private ScrollViewer _bookmarksBody = null!;
+    private StackPanel _bookmarksListPanel = null!;
+    private TextBlock _bookmarksArrow = null!;
+    private TextBlock _bookmarksHeaderText = null!;
 
     // Upload drag state
     private SftpEntry? _dropTargetDir;  // folder row being hovered (null = whole view)
@@ -131,15 +143,38 @@ public partial class SftpFileBrowserView : UserControl
 
     private string? _lastTerminalDir;
 
+    // Per-session definition and persistence callback for bookmark mutations.
+    private SessionDefinition? _definition;
+    private Action? _saveConfig;
+
+    // Shell command injection callback (set by SshSessionInstance after shell stream is ready).
+    private Action<string>? _sendShellCommand;
+
+    // Bookmark drag state
+    private int? _bookmarkDragSourceIndex;
+    private Point _bookmarkDragStartPos;
+    private bool _bookmarkDragActive;
+
+    // Remembered height for restore when expanding (persisted in TempSettings).
+    private double _bookmarksBodyHeight = 160;
+    private bool _bookmarksExpanded;
+
     public ObservableCollection<SftpEntry> Entries { get; } = new();
     public string CurrentPath => _currentPath;
     public bool FollowLocation => _followLocationCheckBox?.IsChecked == true;
 
-    public SftpFileBrowserView(SftpClient sftpClient, SshClient? sshClient = null, EditorRegistry? editorRegistry = null)
+    public SftpFileBrowserView(
+        SftpClient sftpClient,
+        SshClient? sshClient = null,
+        EditorRegistry? editorRegistry = null,
+        SessionDefinition? definition = null,
+        Action? saveConfig = null)
     {
         _sftpClient      = sftpClient ?? throw new ArgumentNullException(nameof(sftpClient));
         _sshClient       = sshClient;
         _editorRegistry  = editorRegistry;
+        _definition      = definition;
+        _saveConfig      = saveConfig;
         InitializeComponent();
 
         _pathBox               = this.FindControl<TextBox>("PathBox")!;
@@ -151,8 +186,16 @@ public partial class SftpFileBrowserView : UserControl
         _menuDownloadTo = this.FindControl<MenuItem>("MenuDownloadTo")!;
         _menuDelete     = this.FindControl<MenuItem>("MenuDelete")!;
         _menuProperties = this.FindControl<MenuItem>("MenuProperties")!;
+        _menuBookmarkFolder = this.FindControl<MenuItem>("MenuBookmarkFolder")!;
         _transferOverlay       = this.FindControl<TransferProgressOverlay>("TransferOverlay")!;
         _dropOverlay           = this.FindControl<Border>("DropOverlay")!;
+
+        _mainContentGrid     = this.FindControl<Grid>("MainContentGrid")!;
+        _bookmarkSplitter    = this.FindControl<GridSplitter>("BookmarkSplitter")!;
+        _bookmarksBody       = this.FindControl<ScrollViewer>("BookmarksBody")!;
+        _bookmarksListPanel  = this.FindControl<StackPanel>("BookmarksListPanel")!;
+        _bookmarksArrow      = this.FindControl<TextBlock>("BookmarksArrow")!;
+        _bookmarksHeaderText = this.FindControl<TextBlock>("BookmarksHeaderText")!;
 
         _filesGrid.ItemsSource = Entries;
 
@@ -180,6 +223,26 @@ public partial class SftpFileBrowserView : UserControl
 
         // Persist column widths when they change (debounced via a timer per column)
         SubscribeColumnWidthPersistence();
+
+        // Bookmark panel: restore persisted state and wire drag handlers
+        var savedHeight = SettingsService.Temp.BookmarksHeightPx;
+        if (savedHeight > 20) _bookmarksBodyHeight = savedHeight;
+        _bookmarksListPanel.AddHandler(PointerPressedEvent,  OnBookmarksPanelPointerPressed,  RoutingStrategies.Tunnel);
+        _bookmarksListPanel.AddHandler(PointerMovedEvent,    OnBookmarksPanelPointerMoved,    RoutingStrategies.Tunnel);
+        _bookmarksListPanel.AddHandler(PointerReleasedEvent, OnBookmarksPanelPointerReleased, RoutingStrategies.Tunnel);
+        SetBookmarksExpanded(SettingsService.Temp.BookmarksExpanded, save: false);
+        UpdateBookmarksHeader();
+        RebuildBookmarksList();
+    }
+
+    /// <summary>
+    /// Called by <see cref="SshSessionInstance"/> once the SSH shell stream is
+    /// ready. Enables bookmark activation to inject <c>cd</c> commands into
+    /// the remote shell.
+    /// </summary>
+    internal void SetShellCommand(Action<string> sendCommand)
+    {
+        _sendShellCommand = sendCommand;
     }
 
     public void NavigateTo(string path)
@@ -343,6 +406,7 @@ public partial class SftpFileBrowserView : UserControl
         _menuDownloadTo.IsEnabled = hasEntry && !isParent;
         _menuDelete.IsEnabled     = hasEntry && !isParent;
         _menuProperties.IsVisible = isDir && _sshClient?.IsConnected == true;
+        _menuBookmarkFolder.IsVisible = isDir && _definition != null;
 
         // Rebuild the "Download to ▶" submenu dynamically
         RebuildDownloadToSubMenu();
@@ -358,6 +422,20 @@ public partial class SftpFileBrowserView : UserControl
         var owner = TopLevel.GetTopLevel(this) as Window;
         var dialog = new FolderPropertiesDialog(_sshClient, entry.FullPath);
         await dialog.ShowDialog(owner!);
+    }
+
+    private void OnMenuBookmarkFolderClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_filesGrid.SelectedItem is not SftpEntry entry || !entry.IsDirectory || entry.IsParentLink) return;
+
+        var bookmarks = GetBookmarks();
+        if (bookmarks.Any(b => b.AbsolutePath == entry.FullPath)) return;
+
+        bookmarks.Add(new Bookmark { Name = entry.FullPath, AbsolutePath = entry.FullPath });
+        SaveBookmarks(bookmarks);
+
+        if (!_bookmarksExpanded)
+            SetBookmarksExpanded(true, save: true);
     }
 
     private void RebuildDownloadToSubMenu()
@@ -1109,6 +1187,296 @@ public partial class SftpFileBrowserView : UserControl
         }
 
         return localPath;
+    }
+
+    // -----------------------------------------------------------------------
+    // Bookmarks — data helpers
+    // -----------------------------------------------------------------------
+
+    private List<Bookmark> GetBookmarks()
+    {
+        if (_definition?.Settings is SshSettings ssh)
+            return [.. ssh.Bookmarks];
+        return [];
+    }
+
+    private void SaveBookmarks(List<Bookmark> bookmarks)
+    {
+        if (_definition == null || _definition.Settings is not SshSettings ssh || _saveConfig == null) return;
+        _definition.Settings = ssh with { Bookmarks = bookmarks };
+        _saveConfig();
+        UpdateBookmarksHeader();
+        RebuildBookmarksList();
+    }
+
+    private void ActivateBookmark(string absPath, bool syncTerminal)
+    {
+        NavigateTo(absPath);
+        if (syncTerminal && _sendShellCommand != null)
+        {
+            // Single-quote escape: ' → '\''
+            var escaped = absPath.Replace("'", "'\\''");
+            _sendShellCommand($"cd '{escaped}'");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Bookmarks — panel UI
+    // -----------------------------------------------------------------------
+
+    private void UpdateBookmarksHeader()
+    {
+        var count = GetBookmarks().Count;
+        _bookmarksHeaderText.Text = count == 0 ? "Bookmarks" : $"Bookmarks ({count})";
+    }
+
+    private void SetBookmarksExpanded(bool expanded, bool save = true)
+    {
+        _bookmarksExpanded = expanded;
+        _bookmarksArrow.Text = expanded ? "▼" : "►";
+
+        if (expanded)
+        {
+            _mainContentGrid.RowDefinitions[2].MinHeight = 228; // ~28 header + 200 body
+            _mainContentGrid.RowDefinitions[2].Height = new GridLength(Math.Max(_bookmarksBodyHeight, 228));
+            _bookmarkSplitter.IsVisible = true;
+            _bookmarksBody.IsVisible = true;
+        }
+        else
+        {
+            // Preserve current height before collapsing so it restores correctly.
+            var current = _mainContentGrid.RowDefinitions[2].ActualHeight;
+            if (_bookmarksBody.IsVisible && current > 20)
+            {
+                _bookmarksBodyHeight = current;
+                if (save)
+                {
+                    SettingsService.Temp.BookmarksHeightPx = _bookmarksBodyHeight;
+                    SettingsService.SaveTemp();
+                }
+            }
+            _mainContentGrid.RowDefinitions[2].MinHeight = 0;
+            _mainContentGrid.RowDefinitions[2].Height = GridLength.Auto;
+            _bookmarkSplitter.IsVisible = false;
+            _bookmarksBody.IsVisible = false;
+        }
+
+        if (save)
+        {
+            SettingsService.Temp.BookmarksExpanded = expanded;
+            SettingsService.SaveTemp();
+        }
+    }
+
+    private void OnBookmarksHeaderTapped(object? sender, Avalonia.Input.TappedEventArgs e)
+    {
+        SetBookmarksExpanded(!_bookmarksExpanded, save: true);
+    }
+
+    private void OnBookmarkSplitterDragCompleted(object? sender, VectorEventArgs e)
+    {
+        var height = _mainContentGrid.RowDefinitions[2].ActualHeight;
+        if (height > 20)
+        {
+            _bookmarksBodyHeight = height;
+            SettingsService.Temp.BookmarksHeightPx = height;
+            SettingsService.SaveTemp();
+        }
+    }
+
+    private void RebuildBookmarksList()
+    {
+        _bookmarksListPanel.Children.Clear();
+        var bookmarks = GetBookmarks();
+        for (int i = 0; i < bookmarks.Count; i++)
+            _bookmarksListPanel.Children.Add(BuildBookmarkItem(bookmarks[i], i));
+    }
+
+    private Control BuildBookmarkItem(Bookmark bookmark, int index)
+    {
+        var nameText = new TextBlock
+        {
+            Text            = bookmark.Name,
+            FontSize        = 12,
+            TextTrimming    = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        ToolTip.SetTip(nameText, bookmark.AbsolutePath);
+
+        var contentPanel = new StackPanel { Spacing = 1 };
+        contentPanel.Children.Add(nameText);
+
+        if (bookmark.Name != bookmark.AbsolutePath)
+        {
+            contentPanel.Children.Add(new TextBlock
+            {
+                Text          = bookmark.AbsolutePath,
+                FontSize      = 9,
+                Foreground    = Brushes.Gray,
+                TextTrimming  = TextTrimming.CharacterEllipsis,
+            });
+        }
+
+        var itemGrid = new Grid();
+        itemGrid.Children.Add(contentPanel);
+
+        var border = new Border
+        {
+            Padding = new Thickness(6, 4),
+            Child   = itemGrid,
+        };
+
+        // Hover highlight
+        border.PointerEntered += (_, _) => border.Background = new SolidColorBrush(Color.FromRgb(50, 50, 60));
+        border.PointerExited  += (_, _) => border.Background = null;
+
+        // Double-click: navigate SFTP + inject cd into terminal
+        border.DoubleTapped += (_, _) => ActivateBookmark(bookmark.AbsolutePath, syncTerminal: true);
+
+        // Ctrl+Click: navigate SFTP only
+        border.Tapped += (_, e) =>
+        {
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+                ActivateBookmark(bookmark.AbsolutePath, syncTerminal: false);
+        };
+
+        // Right-click context menu
+        var cm = new ContextMenu();
+
+        var renameItem = new MenuItem { Header = "Rename…" };
+        renameItem.Click += async (_, _) =>
+        {
+            var owner = TopLevel.GetTopLevel(this) as Window;
+            if (owner == null) return;
+            var dialog = new RenameDialog(bookmark.Name);
+            var newName = await dialog.ShowDialog<string?>(owner);
+            if (!string.IsNullOrWhiteSpace(newName))
+            {
+                var bm = GetBookmarks();
+                if (index < bm.Count)
+                {
+                    bm[index] = bm[index] with { Name = newName };
+                    SaveBookmarks(bm);
+                }
+            }
+        };
+
+        var editPathItem = new MenuItem { Header = "Edit path…" };
+        editPathItem.Click += async (_, _) =>
+        {
+            var owner = TopLevel.GetTopLevel(this) as Window;
+            if (owner == null) return;
+            var dialog = new RenameDialog(bookmark.AbsolutePath) { Title = "Edit path" };
+            var newPath = await dialog.ShowDialog<string?>(owner);
+            if (!string.IsNullOrWhiteSpace(newPath))
+            {
+                newPath = "/" + newPath.Trim('/');
+                var bm = GetBookmarks();
+                if (index < bm.Count)
+                {
+                    bm[index] = bm[index] with { AbsolutePath = newPath };
+                    SaveBookmarks(bm);
+                }
+            }
+        };
+
+        var deleteItem = new MenuItem { Header = "Delete" };
+        deleteItem.Click += (_, _) =>
+        {
+            var bm = GetBookmarks();
+            bm.RemoveAt(index);
+            SaveBookmarks(bm);
+        };
+
+        cm.Items.Add(renameItem);
+        cm.Items.Add(editPathItem);
+        cm.Items.Add(new Separator());
+        cm.Items.Add(deleteItem);
+        border.ContextMenu = cm;
+
+        return border;
+    }
+
+    // -----------------------------------------------------------------------
+    // Bookmarks — drag-and-drop reorder (pointer-driven, no Avalonia DragDrop API)
+    // -----------------------------------------------------------------------
+
+    private void OnBookmarksPanelPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        _bookmarkDragSourceIndex = null;
+        _bookmarkDragActive      = false;
+
+        if (!e.GetCurrentPoint(_bookmarksListPanel).Properties.IsLeftButtonPressed) return;
+
+        var pos = e.GetPosition(_bookmarksListPanel);
+        var children = _bookmarksListPanel.Children;
+        for (int i = 0; i < children.Count; i++)
+        {
+            var child  = children[i];
+            var origin = child.TranslatePoint(new Point(0, 0), _bookmarksListPanel);
+            if (origin == null) continue;
+            if (new Rect(origin.Value, child.Bounds.Size).Contains(pos))
+            {
+                _bookmarkDragSourceIndex = i;
+                _bookmarkDragStartPos    = pos;
+                break;
+            }
+        }
+    }
+
+    private void OnBookmarksPanelPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!_bookmarkDragSourceIndex.HasValue) return;
+        if (!e.GetCurrentPoint(_bookmarksListPanel).Properties.IsLeftButtonPressed)
+        {
+            _bookmarkDragSourceIndex = null;
+            _bookmarkDragActive      = false;
+            return;
+        }
+
+        var pos = e.GetPosition(_bookmarksListPanel);
+        var dx  = pos.X - _bookmarkDragStartPos.X;
+        var dy  = pos.Y - _bookmarkDragStartPos.Y;
+        if (!_bookmarkDragActive && Math.Sqrt(dx * dx + dy * dy) < DragThresholdPx) return;
+        _bookmarkDragActive = true;
+    }
+
+    private void OnBookmarksPanelPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_bookmarkDragActive && _bookmarkDragSourceIndex.HasValue)
+        {
+            var pos         = e.GetPosition(_bookmarksListPanel);
+            var targetIndex = ComputeBookmarkDropIndex(pos.Y);
+            var sourceIndex = _bookmarkDragSourceIndex.Value;
+
+            if (targetIndex != sourceIndex)
+            {
+                var bm   = GetBookmarks();
+                var item = bm[sourceIndex];
+                bm.RemoveAt(sourceIndex);
+                var insertAt = Math.Min(targetIndex, bm.Count);
+                bm.Insert(insertAt, item);
+                SaveBookmarks(bm);
+            }
+        }
+
+        _bookmarkDragSourceIndex = null;
+        _bookmarkDragActive      = false;
+    }
+
+    private int ComputeBookmarkDropIndex(double y)
+    {
+        var children = _bookmarksListPanel.Children;
+        for (int i = 0; i < children.Count; i++)
+        {
+            var child  = children[i];
+            var origin = child.TranslatePoint(new Point(0, 0), _bookmarksListPanel);
+            if (origin == null) continue;
+            if (y < origin.Value.Y + child.Bounds.Height / 2.0)
+                return i;
+        }
+        return children.Count;
     }
 
     private static string BuildPermissionString(Renci.SshNet.Sftp.ISftpFile f)
