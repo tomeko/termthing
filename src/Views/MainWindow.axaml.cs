@@ -11,6 +11,7 @@ using Iciclecreek.Terminal;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using TermThing.Configuration;
+using TermThing.Editor;
 using TermThing.Sessions;
 using TermThing.Sessions.Launchers;
 using TermThing.Ssh;
@@ -21,6 +22,7 @@ public partial class MainWindow : Window, ISessionPromptHost
 {
     private readonly SessionLauncherRegistry _registry = new();
     private readonly IKnownHostsService _knownHosts = new KnownHostsService();
+    private readonly EditorRegistry _editors = new();
     private AppConfig _config = new();
 
     // Maps TabItem → TabState so we can manage overlays, reconnect, and teardown cleanly.
@@ -38,6 +40,11 @@ public partial class MainWindow : Window, ISessionPromptHost
         public ISessionInstance? Instance { get; set; }
         public SessionEndedOverlay? Overlay { get; set; }
         public FloatingSessionWindow? FloatingWindow { get; set; }
+        /// <summary>
+        /// Stable editor-session ID sourced from <see cref="SftpFileBrowserView.SessionEditorId"/>.
+        /// Null for sessions without an SFTP browser.
+        /// </summary>
+        public Guid? SftpEditorSessionId { get; init; }
     }
 
     // Provides access to the named grid for column-width persistence
@@ -49,7 +56,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         InitializeComponent();
 
         _registry.Register(new LocalSessionLauncher());
-        _registry.Register(new SshSessionLauncher(_knownHosts, () => _config));
+        _registry.Register(new SshSessionLauncher(_knownHosts, () => _config, _editors));
         _registry.Register(new SerialSessionLauncher());
 
         // Load both settings files
@@ -618,12 +625,15 @@ public partial class MainWindow : Window, ISessionPromptHost
             TitleBlock = titleBlock,
             Def        = def,
             Instance   = instance,
+            // Capture the stable editor-session ID so we can close
+            // any open editor windows when this tab is closed.
+            SftpEditorSessionId = (instance.SftpPanel as SftpFileBrowserView)?.SessionEditorId,
         };
         _tabStates[tab] = state;
 
         WireSessionInstance(state, instance);
         popOutButton.Click += (_, _) => PopOutTab(tab);
-        closeButton.Click += (_, _) => CloseTab(tab);
+        closeButton.Click  += async (_, _) => await CloseTabAsync(tab);
 
         TerminalTabs.Items.Add(tab);
         TerminalTabs.SelectedItem = tab;
@@ -646,6 +656,9 @@ public partial class MainWindow : Window, ISessionPromptHost
         {
             state.Instance = null;
             instance.Dispose();
+            // Session died naturally (SSH disconnect) — editors can no longer upload.
+            if (state.SftpEditorSessionId.HasValue)
+                _editors.NotifySessionEnded(state.SftpEditorSessionId.Value);
             Dispatcher.UIThread.Post(() => ShowDisconnectOverlay(state));
         };
     }
@@ -659,7 +672,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         state.Host.Children.Add(overlay);
         ClearSftpPanelIfNeeded(state.Tab);
 
-        overlay.CloseRequested     += (_, _) => CloseTab(state.Tab);
+        overlay.CloseRequested     += async (_, _) => await CloseTabAsync(state.Tab);
         overlay.ReconnectRequested += async (_, _) => await ReconnectTabAsync(state);
     }
 
@@ -717,7 +730,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             var overlay = new SessionEndedOverlay(errorMessage);
             state.Overlay = overlay;
             state.Host.Children.Add(overlay);
-            overlay.CloseRequested     += (_, _) => CloseTab(state.Tab);
+            overlay.CloseRequested     += async (_, _) => await CloseTabAsync(state.Tab);
             overlay.ReconnectRequested += async (_, _) => await ReconnectTabAsync(state);
             return;
         }
@@ -729,10 +742,16 @@ public partial class MainWindow : Window, ISessionPromptHost
         FocusTerminal(newInstance.TabContent);
     }
 
-    private void CloseTab(TabItem tab)
+    private async Task CloseTabAsync(TabItem tab)
     {
         if (!_tabStates.TryGetValue(tab, out var state)) return;
         _tabStates.Remove(tab);
+
+        // Close any open editor windows before killing the SFTP client, giving
+        // the user a chance to upload dirty buffers while the connection is alive.
+        if (state.SftpEditorSessionId.HasValue)
+            await _editors.CloseSessionEditorsAsync(state.SftpEditorSessionId.Value);
+
         state.Instance?.Kill();
         state.Instance?.Dispose();
 
@@ -785,7 +804,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             state.Instance?.SftpPanel,
             state.TitleBlock,
             () => DockBackSession(state),
-            () => CloseTab(state.Tab))
+            async () => await CloseTabAsync(state.Tab))
         {
             Width = Bounds.Width,
             Height = Bounds.Height,

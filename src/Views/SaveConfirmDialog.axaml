@@ -1,0 +1,36 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.SaveConfirmDialog"
+        Title="Save changes?"
+        Width="440"
+        CanResize="False"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner">
+
+    <StackPanel Margin="20" Spacing="14">
+
+        <TextBlock Name="MessageText"
+                   TextWrapping="Wrap"
+                   Text="Upload changes to the remote file?" />
+
+        <CheckBox Name="RememberCheck"
+                  Content="Remember for this file (don't ask again this session)"
+                  IsChecked="True" />
+
+        <StackPanel Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="8">
+            <Button Name="UploadButton"
+                    Content="Upload"
+                    IsDefault="True"
+                    Padding="20,6"
+                    Click="OnUploadClicked" />
+            <Button Name="CancelButton"
+                    Content="Cancel"
+                    IsCancel="True"
+                    Padding="20,6"
+                    Click="OnCancelClicked" />
+        </StackPanel>
+
+    </StackPanel>
+</Window>

@@ -12,6 +12,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using TermThing.Configuration;
+using TermThing.Editor;
 using TermThing.Sftp;
 
 namespace TermThing.Views;
@@ -82,12 +83,20 @@ public partial class SftpFileBrowserView : UserControl
 {
     private readonly SftpClient _sftpClient;
     private readonly TransferQueue _transferQueue;
+    private readonly EditorRegistry? _editorRegistry;
     private SshClient? _sshClient;
     private string _currentPath = "/";
     private bool _navigating;
 
     // Per-session delete confirmation suppression
     private bool _suppressDeleteConfirmThisSession;
+
+    /// <summary>
+    /// Stable identifier for this SFTP session, used as the key in
+    /// <see cref="EditorRegistry"/> so that the same file opened twice is
+    /// de-duplicated rather than launching a second editor window.
+    /// </summary>
+    public Guid SessionEditorId { get; } = Guid.NewGuid();
 
     private TextBox _pathBox = null!;
     private Button _refreshButton = null!;
@@ -116,10 +125,11 @@ public partial class SftpFileBrowserView : UserControl
     public string CurrentPath => _currentPath;
     public bool FollowLocation => _followLocationCheckBox?.IsChecked == true;
 
-    public SftpFileBrowserView(SftpClient sftpClient, SshClient? sshClient = null)
+    public SftpFileBrowserView(SftpClient sftpClient, SshClient? sshClient = null, EditorRegistry? editorRegistry = null)
     {
-        _sftpClient = sftpClient ?? throw new ArgumentNullException(nameof(sftpClient));
-        _sshClient  = sshClient;
+        _sftpClient      = sftpClient ?? throw new ArgumentNullException(nameof(sftpClient));
+        _sshClient       = sshClient;
+        _editorRegistry  = editorRegistry;
         InitializeComponent();
 
         _pathBox               = this.FindControl<TextBox>("PathBox")!;
@@ -571,7 +581,18 @@ public partial class SftpFileBrowserView : UserControl
     {
         var host = TopLevel.GetTopLevel(this) as Window;
         if (host == null) return;
-        var opener = new SftpFileOpener(_sftpClient, Guid.NewGuid(), host);
+
+        // Build a display name for window titles from the SSH client's connection info
+        var displayHost = _sshClient is not null
+            ? $"{_sshClient.ConnectionInfo.Username}@{_sshClient.ConnectionInfo.Host}"
+            : _sftpClient.ConnectionInfo.Host;
+
+        var opener = new SftpFileOpener(
+            _sftpClient,
+            SessionEditorId,
+            displayHost,
+            host,
+            _editorRegistry);
         try
         {
             await opener.OpenAsync(entry.FullPath);

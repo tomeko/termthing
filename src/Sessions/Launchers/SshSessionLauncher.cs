@@ -8,6 +8,7 @@ using Renci.SshNet.Common;
 using System.Diagnostics;
 using System.IO;
 using TermThing.Configuration;
+using TermThing.Editor;
 using TermThing.Ssh;
 using TermThing.Views;
 
@@ -17,11 +18,13 @@ public sealed class SshSessionLauncher : ISessionLauncher
 {
     private readonly IKnownHostsService _knownHosts;
     private readonly Func<AppConfig> _getConfig;
+    private readonly EditorRegistry? _editors;
 
-    public SshSessionLauncher(IKnownHostsService knownHosts, Func<AppConfig> getConfig)
+    public SshSessionLauncher(IKnownHostsService knownHosts, Func<AppConfig> getConfig, EditorRegistry? editors = null)
     {
         _knownHosts = knownHosts;
         _getConfig  = getConfig;
+        _editors    = editors;
     }
 
     public SessionKind Kind => SessionKind.Ssh;
@@ -205,12 +208,12 @@ public sealed class SshSessionLauncher : ISessionLauncher
         {
             var tcs = new TaskCompletionSource<bool>();
             tc.Loaded += (_, _) => tcs.TrySetResult(true);
-            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult);
+            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors);
             _ = CompleteConnectionAsync(tc, client, sftpClient, settings, tcs.Task, instance);
             return instance;
         }
 
-        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult);
+        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors);
         await CompleteConnectionAsync(tc, client, sftpClient, settings, Task.CompletedTask, loadedInstance);
         return loadedInstance;
     }
@@ -270,7 +273,8 @@ internal sealed class SshSessionInstance : ISessionInstance
         SshClient        client,
         SftpClient?      sftpClient,
         Task?            sftpConnectTask = null,
-        SshChainResult?  chain           = null)
+        SshChainResult?  chain           = null,
+        EditorRegistry?  editors         = null)
     {
         _chain = chain;
         _tc = tc;
@@ -280,7 +284,7 @@ internal sealed class SshSessionInstance : ISessionInstance
 
         if (sftpClient != null)
         {
-            _sftpView = new SftpFileBrowserView(sftpClient, client);
+            _sftpView = new SftpFileBrowserView(sftpClient, client, editors);
 
             // Navigate to home directory once the SFTP handshake completes.
             // sftpConnectTask may already be completed (synchronous path) or still

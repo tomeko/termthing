@@ -13,7 +13,7 @@ namespace TermThing.Views;
 public partial class FloatingSessionWindow : Window
 {
     private readonly Action _dockBackCallback;
-    private readonly Action _closeCallback;
+    private readonly Func<Task> _closeCallback;
     private readonly TextBlock _titleSource;
 
     // Prevents the Closing handler from triggering a second dock-back
@@ -25,7 +25,7 @@ public partial class FloatingSessionWindow : Window
         Control? sftpPanel,
         TextBlock titleSource,
         Action dockBackCallback,
-        Action closeCallback)
+        Func<Task> closeCallback)
     {
         InitializeComponent();
 
@@ -118,7 +118,7 @@ public partial class FloatingSessionWindow : Window
         if (result == CloseDialogResult.Close)
         {
             _isDocking = true;
-            Dispatcher.UIThread.Post(_closeCallback);
+            await _closeCallback();
         }
         else if (result == CloseDialogResult.ReAttach)
         {

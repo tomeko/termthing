@@ -1,0 +1,67 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:avalonEdit="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
+        x:Class="TermThing.Views.TextEditorWindow"
+        Title="Text Editor"
+        Width="960" Height="680"
+        MinWidth="420" MinHeight="300"
+        WindowStartupLocation="CenterScreen">
+
+    <DockPanel>
+
+        <!-- Top toolbar -->
+        <Border DockPanel.Dock="Top"
+                BorderThickness="0,0,0,1"
+                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                Padding="6,4">
+            <DockPanel>
+
+                <!-- Right side: syntax picker + Save -->
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="6"
+                            VerticalAlignment="Center">
+                    <ComboBox Name="SyntaxCombo"
+                              Width="170"
+                              VerticalAlignment="Center"
+                              ToolTip.Tip="Syntax highlighting language" />
+                    <Button Name="SaveButton"
+                            Content="Save"
+                            IsEnabled="False"
+                            Padding="14,4"
+                            VerticalAlignment="Center"
+                            ToolTip.Tip="Upload changes to remote file (Ctrl+S)" />
+                </StackPanel>
+
+                <!-- Path box — read-only, selectable for copy -->
+                <TextBox Name="PathBox"
+                         IsReadOnly="True"
+                         VerticalAlignment="Center"
+                         Margin="0,0,8,0"
+                         BorderThickness="0"
+                         Background="Transparent"
+                         FontFamily="fonts:CascadiaCode#Cascadia Code,Consolas,monospace"
+                         FontSize="12"
+                         ToolTip.Tip="Remote path" />
+
+            </DockPanel>
+        </Border>
+
+        <!-- Status bar -->
+        <TextBlock Name="StatusText"
+                   DockPanel.Dock="Bottom"
+                   FontSize="11"
+                   Padding="8,2"
+                   IsVisible="False"
+                   Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" />
+
+        <!-- Editor fills remaining space -->
+        <avalonEdit:TextEditor Name="Editor"
+                               ShowLineNumbers="True"
+                               FontFamily="fonts:CascadiaCode#Cascadia Code,Consolas,monospace"
+                               FontSize="13"
+                               WordWrap="False"
+                               HorizontalScrollBarVisibility="Auto"
+                               VerticalScrollBarVisibility="Auto" />
+
+    </DockPanel>
+</Window>
