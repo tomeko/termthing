@@ -1,7 +1,7 @@
 # TermThing — Agent Notes
 
 Cross-platform tabbed terminal app: Local shells, SSH (with jump-host chains and SFTP),
-and Serial. Built with **.NET 10 / Avalonia 11** on top of a **forked**
+and Serial. Built with **.NET 10 / Avalonia 12** on top of a **forked**
 [`Iciclecreek.Avalonia.Terminal`](Iciclecreek.Avalonia.Terminal/README.md) submodule.
 
 ## Build & Run

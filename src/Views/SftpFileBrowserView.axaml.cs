@@ -141,7 +141,7 @@ public partial class SftpFileBrowserView : UserControl
     // Drag-to-download state
     private SftpEntry? _dragOutPending;  // entry the user started dragging
     private Point _dragOutStartPos;
-    private PointerEventArgs? _dragOutPointerArgs;
+    private PointerPressedEventArgs? _dragOutPointerArgs;
     private bool _dragOutInProgress;
 
     private string? _lastTerminalDir;
@@ -856,9 +856,7 @@ public partial class SftpFileBrowserView : UserControl
     private void OnDragOver(object? sender, DragEventArgs e)
     {
         e.Handled = true;
-#pragma warning disable CS0618
-        if (!e.Data.Contains(DataFormats.Files))
-#pragma warning restore CS0618
+        if (!e.DataTransfer.Contains(DataFormat.File))
         {
             e.DragEffects = DragDropEffects.None;
             ClearUploadDragState();
@@ -890,10 +888,8 @@ public partial class SftpFileBrowserView : UserControl
         var destDir = _dropTargetDir?.FullPath ?? _currentPath;
         ClearUploadDragState();
 
-#pragma warning disable CS0618
-        if (!e.Data.Contains(DataFormats.Files)) return;
-        var storageItems = e.Data.GetFiles()?.ToList();
-#pragma warning restore CS0618
+        if (!e.DataTransfer.Contains(DataFormat.File)) return;
+        var storageItems = e.DataTransfer.TryGetFiles()?.ToList();
         if (storageItems == null || storageItems.Count == 0) return;
 
         // Resolve to local file system paths
@@ -1174,11 +1170,12 @@ public partial class SftpFileBrowserView : UserControl
 
         // Threshold exceeded — start the drag
         var entry           = _dragOutPending;
+        var pressedArgs     = _dragOutPointerArgs;
         _dragOutPending     = null;
         _dragOutPointerArgs = null;
         _dragOutInProgress  = true;
 
-        _ = InitiateDragDownloadAsync(entry, e);
+        _ = InitiateDragDownloadAsync(entry, pressedArgs ?? throw new InvalidOperationException("Pressed event args missing"));
     }
 
     private void OnFilesGridPointerReleased(object? sender, PointerReleasedEventArgs e)
@@ -1188,7 +1185,7 @@ public partial class SftpFileBrowserView : UserControl
         // _dragOutInProgress is reset by InitiateDragDownloadAsync after completion
     }
 
-    private async Task InitiateDragDownloadAsync(SftpEntry entry, PointerEventArgs pointerArgs)
+    private async Task InitiateDragDownloadAsync(SftpEntry entry, PointerPressedEventArgs pointerArgs)
     {
         try
         {
@@ -1216,16 +1213,20 @@ public partial class SftpFileBrowserView : UserControl
 
             SetStatus(null);
 
-            // Verify the pointer is still pressed before handing off to DoDragDrop
+            // Verify the pointer is still pressed before handing off to DoDragDropAsync
             var pt = pointerArgs.GetCurrentPoint(_filesGrid);
             if (!pt.Properties.IsLeftButtonPressed)
                 return;
 
-            var dataObj = new DataObject();
-#pragma warning disable CS0618
-            dataObj.Set(DataFormats.FileNames, new[] { localPath });
-            await DragDrop.DoDragDrop(pointerArgs, dataObj, DragDropEffects.Copy);
-#pragma warning restore CS0618
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel is null) return;
+
+            var storageFile = await topLevel.StorageProvider.TryGetFileFromPathAsync(new Uri(localPath));
+            if (storageFile is null) return;
+
+            var transfer = new DataTransfer();
+            transfer.Add(DataTransferItem.CreateFile(storageFile));
+            await DragDrop.DoDragDropAsync(pointerArgs, transfer, DragDropEffects.Copy);
         }
         finally
         {

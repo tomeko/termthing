@@ -37,7 +37,7 @@
                   IsChecked="True"
                   FontSize="11"
                   Margin="6,2,4,4"
-                  Checked="OnFollowLocationChecked"/>
+                  IsCheckedChanged="OnFollowLocationChecked"/>
 
         <StackPanel x:Name="MonitorChecksRow"
                     DockPanel.Dock="Bottom"
