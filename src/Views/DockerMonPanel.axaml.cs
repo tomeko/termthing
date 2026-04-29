@@ -91,4 +91,10 @@ public partial class DockerMonPanel : UserControl
         try { await _poller.RestartAsync(row.Id); }
         finally { row.Busy = false; _poller.RefreshNow(); }
     }
+
+    private void OnLogsClicked(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not DockerContainerRow row) return;
+        _poller.RequestLogs(row);
+    }
 }

@@ -54,7 +54,7 @@
                     <DataGridTextColumn Header="Image"  Binding="{Binding Image}"  Width="200" MinWidth="80"/>
                     <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="160" MinWidth="60"/>
                     <DataGridTextColumn Header="Ports"  Binding="{Binding Ports}"  Width="*"   MinWidth="80"/>
-                    <DataGridTemplateColumn Header="Actions" Width="120" CanUserSort="False" CanUserResize="False">
+                    <DataGridTemplateColumn Header="Actions" Width="150" CanUserSort="False" CanUserResize="False">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <StackPanel Orientation="Horizontal" Spacing="4"
@@ -72,6 +72,12 @@
                                             FontSize="11"
                                             IsEnabled="{Binding NotBusy}"
                                             Click="OnRestartClicked"
+                                            Tag="{Binding}"/>
+                                    <Button Content="📜"
+                                            ToolTip.Tip="Tail logs"
+                                            Padding="4,0"
+                                            FontSize="11"
+                                            Click="OnLogsClicked"
                                             Tag="{Binding}"/>
                                 </StackPanel>
                             </DataTemplate>

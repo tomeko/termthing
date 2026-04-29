@@ -445,6 +445,7 @@ internal sealed class SshSessionInstance : ISessionInstance
                 return false;
             }
             _dockerMonPoller = probe;
+            _dockerMonPoller.LogsRequested += (_, row) => OpenDockerLogsWindow(row.Id, row.Name);
             _dockerMonPanel = new DockerMonPanel(_dockerMonPoller);
             _dockerMonSlot.Content = _dockerMonPanel;
             _dockerMonSlot.IsVisible = true;
@@ -469,6 +470,20 @@ internal sealed class SshSessionInstance : ISessionInstance
         if (_connectionEnded || !_client.IsConnected) return;
         var source = new SshTailLogSource(_client, remotePath);
         var window = new LogTailWindow(source, remotePath);
+        _tailWindows.Add(window);
+        window.Closed += (_, _) => _tailWindows.Remove(window);
+        var owner = TopLevel.GetTopLevel(_hostPanel) as Window;
+        if (owner != null) window.Show(owner);
+        else window.Show();
+    }
+
+    private void OpenDockerLogsWindow(string containerId, string name)
+    {
+        if (_connectionEnded || !_client.IsConnected) return;
+        var shortId = containerId.Length > 12 ? containerId[..12] : containerId;
+        var label = $"docker:{name} ({shortId})";
+        var source = new DockerLogsSource(_client, containerId, label);
+        var window = new LogTailWindow(source);
         _tailWindows.Add(window);
         window.Closed += (_, _) => _tailWindows.Remove(window);
         var owner = TopLevel.GetTopLevel(_hostPanel) as Window;

@@ -65,6 +65,16 @@ public sealed class DockerMonPoller : IDisposable
     /// <summary>Fired with a one-shot error message when polling or actions fail (UI thread).</summary>
     public event EventHandler<string>? Error;
 
+    /// <summary>
+    /// Fired (UI thread) when the user clicks the Logs button for a container row.
+    /// The subscriber is responsible for opening a <c>LogTailWindow</c>.
+    /// </summary>
+    public event EventHandler<DockerContainerRow>? LogsRequested;
+
+    /// <summary>Raises <see cref="LogsRequested"/> for the given row (must be called on UI thread).</summary>
+    internal void RequestLogs(DockerContainerRow row) =>
+        LogsRequested?.Invoke(this, row);
+
     public DockerMonPoller(SshClient client, TimeSpan interval)
     {
         _client = client;
