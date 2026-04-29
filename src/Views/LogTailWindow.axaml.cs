@@ -1,5 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using AvaloniaEdit;
 using AvaloniaEdit.TextMate;
@@ -68,6 +70,10 @@ public partial class LogTailWindow : Window
 
         _pauseButton.IsCheckedChanged += (_, _) => _paused = _pauseButton.IsChecked == true;
         _clearButton.Click            += (_, _) => _editor.Document.Text = string.Empty;
+
+        // Ctrl+Wheel — zoom font size (tunnel so we intercept before the inner ScrollViewer).
+        _editor.AddHandler(InputElement.PointerWheelChangedEvent,
+            OnEditorPointerWheelChanged, RoutingStrategies.Tunnel);
 
         // Wire log source
         _source.LineReceived += OnLineReceived;
@@ -144,6 +150,14 @@ public partial class LogTailWindow : Window
         if (_textMate == null) return;
         try { _textMate.SetGrammar(scope ?? string.Empty); }
         catch { /* grammar not found — plain text */ }
+    }
+
+    private void OnEditorPointerWheelChanged(object? sender, PointerWheelEventArgs e)
+    {
+        if (!e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
+        e.Handled = true;
+        var delta = e.Delta.Y > 0 ? 1.0 : -1.0;
+        _editor.FontSize = Math.Clamp(_editor.FontSize + delta, 6, 72);
     }
 
     private void OnWindowClosed(object? sender, EventArgs e)

@@ -59,4 +59,70 @@ internal static class MessageDialog
 
         return tcs.Task;
     }
+
+    /// <summary>
+    /// Shows a modal OK / Cancel confirmation dialog.
+    /// OK is the default button (activated by Enter). Returns <see langword="true"/> if OK was pressed.
+    /// </summary>
+    public static Task<bool> ShowConfirmAsync(Window? owner, string title, string message)
+    {
+        var tcs = new TaskCompletionSource<bool>();
+
+        var okBtn = new Button
+        {
+            Content = "OK",
+            IsDefault = true,
+            Padding = new Avalonia.Thickness(18, 4),
+        };
+        var cancelBtn = new Button
+        {
+            Content = "Cancel",
+            IsCancel = true,
+            Padding = new Avalonia.Thickness(18, 4),
+        };
+
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 380,
+            CanResize = false,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = owner != null
+                ? WindowStartupLocation.CenterOwner
+                : WindowStartupLocation.CenterScreen,
+            RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Dark,
+            Content = new StackPanel
+            {
+                Margin = new Avalonia.Thickness(20, 16),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = message,
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = Brushes.White,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { okBtn, cancelBtn },
+                    },
+                },
+            },
+        };
+
+        okBtn.Click    += (_, _) => dialog.Close(true);
+        cancelBtn.Click += (_, _) => dialog.Close(false);
+        dialog.Closed  += (_, _) => tcs.TrySetResult(false); // fallback if closed via X
+
+        if (owner != null)
+            _ = dialog.ShowDialog<bool>(owner).ContinueWith(t => tcs.TrySetResult(t.Result), TaskScheduler.Default);
+        else
+            dialog.Show();
+
+        return tcs.Task;
+    }
 }

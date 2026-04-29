@@ -79,6 +79,10 @@ public partial class DockerMonPanel : UserControl
     private async void OnStopClicked(object? sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.Tag is not DockerContainerRow row) return;
+        var owner = TopLevel.GetTopLevel(this) as Window;
+        var confirmed = await MessageDialog.ShowConfirmAsync(owner, "Stop container",
+            $"Stop container \u2018{row.Name}\u2019?");
+        if (!confirmed) return;
         row.Busy = true;
         try { await _poller.StopAsync(row.Id); }
         finally { row.Busy = false; _poller.RefreshNow(); }
@@ -87,6 +91,10 @@ public partial class DockerMonPanel : UserControl
     private async void OnRestartClicked(object? sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.Tag is not DockerContainerRow row) return;
+        var owner = TopLevel.GetTopLevel(this) as Window;
+        var confirmed = await MessageDialog.ShowConfirmAsync(owner, "Restart container",
+            $"Restart container \u2018{row.Name}\u2019?");
+        if (!confirmed) return;
         row.Busy = true;
         try { await _poller.RestartAsync(row.Id); }
         finally { row.Busy = false; _poller.RefreshNow(); }

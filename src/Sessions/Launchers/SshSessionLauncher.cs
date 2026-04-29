@@ -265,9 +265,12 @@ public sealed class SshSessionLauncher : ISessionLauncher
 internal sealed class SshSessionInstance : ISessionInstance
 {
     private readonly TerminalControl _tc;
-    private readonly DockPanel _hostPanel;
+    private readonly Grid _hostPanel;
     private readonly ContentControl _sysmonSlot;
     private readonly ContentControl _dockerMonSlot;
+    private readonly GridSplitter _dockerSplitter;
+    private readonly RowDefinition _dockerMonRowDef;
+    private double _dockerMonHeight = 200;
     private readonly SshClient _client;
     private readonly SftpClient? _sftpClient;
     private readonly SftpFileBrowserView? _sftpView;
@@ -302,17 +305,33 @@ internal sealed class SshSessionInstance : ISessionInstance
         _saveConfig = saveConfig;
         Title = title;
 
-        // Wrap the terminal in a DockPanel so we can dock Sysmon/DockerMon rows
-        // below it. Order matters: Sysmon docked first → outermost-bottom edge;
-        // DockerMon docked second → above Sysmon; terminal fills remaining space.
+        // Wrap the terminal in a Grid so DockerMon and Sysmon rows can be
+        // docked below with a resizable GridSplitter above DockerMon.
+        // Row layout: 0=terminal(*), 1=docker-splitter(Auto), 2=docker-panel(pixel), 3=sysmon(Auto).
         _sysmonSlot    = new ContentControl { IsVisible = false };
-        _dockerMonSlot = new ContentControl { IsVisible = false, Height = 200 };
-        DockPanel.SetDock(_sysmonSlot, Dock.Bottom);
-        DockPanel.SetDock(_dockerMonSlot, Dock.Bottom);
-        _hostPanel = new DockPanel { LastChildFill = true };
-        _hostPanel.Children.Add(_sysmonSlot);
-        _hostPanel.Children.Add(_dockerMonSlot);
+        _dockerMonSlot = new ContentControl { IsVisible = false };
+        _dockerMonRowDef = new RowDefinition(new GridLength(0, GridUnitType.Pixel));
+        _dockerSplitter = new GridSplitter
+        {
+            Height = 5,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+            ResizeDirection = GridResizeDirection.Rows,
+            Background = new SolidColorBrush(Color.Parse("#3c3c3c")),
+            IsVisible = false,
+        };
+        _hostPanel = new Grid();
+        _hostPanel.RowDefinitions.Add(new RowDefinition(1, GridUnitType.Star));
+        _hostPanel.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+        _hostPanel.RowDefinitions.Add(_dockerMonRowDef);
+        _hostPanel.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+        Grid.SetRow(_tc, 0);
+        Grid.SetRow(_dockerSplitter, 1);
+        Grid.SetRow(_dockerMonSlot, 2);
+        Grid.SetRow(_sysmonSlot, 3);
         _hostPanel.Children.Add(_tc);
+        _hostPanel.Children.Add(_dockerSplitter);
+        _hostPanel.Children.Add(_dockerMonSlot);
+        _hostPanel.Children.Add(_sysmonSlot);
 
         if (sftpClient != null)
         {
@@ -448,6 +467,8 @@ internal sealed class SshSessionInstance : ISessionInstance
             _dockerMonPoller.LogsRequested += (_, row) => OpenDockerLogsWindow(row.Id, row.Name);
             _dockerMonPanel = new DockerMonPanel(_dockerMonPoller);
             _dockerMonSlot.Content = _dockerMonPanel;
+            _dockerMonRowDef.Height = new GridLength(_dockerMonHeight, GridUnitType.Pixel);
+            _dockerSplitter.IsVisible = true;
             _dockerMonSlot.IsVisible = true;
             _dockerMonPoller.Start();
             PersistMonitorState();
@@ -458,8 +479,14 @@ internal sealed class SshSessionInstance : ISessionInstance
             _dockerMonPoller?.Dispose();
             _dockerMonPoller = null;
             _dockerMonPanel = null;
-            _dockerMonSlot.Content = null;
+            // Save the user-resized height before hiding.
+            var h = _dockerMonRowDef.Height;
+            if (h.GridUnitType == GridUnitType.Pixel && h.Value > 0)
+                _dockerMonHeight = h.Value;
+            _dockerMonRowDef.Height = new GridLength(0, GridUnitType.Pixel);
+            _dockerSplitter.IsVisible = false;
             _dockerMonSlot.IsVisible = false;
+            _dockerMonSlot.Content = null;
             PersistMonitorState();
             return true;
         }

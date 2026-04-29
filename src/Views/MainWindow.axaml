@@ -11,7 +11,7 @@
         <!-- Top toolbar -->
         <Grid DockPanel.Dock="Top"
               Background="#1e1e1e"
-              ColumnDefinitions="Auto,Auto,Auto,*,Auto"
+              ColumnDefinitions="Auto,Auto,*,Auto"
               Margin="6,4">
 
             <!-- New Session split-button -->
@@ -29,10 +29,8 @@
                 </SplitButton.Flyout>
             </SplitButton>
 
-            <Button Grid.Column="1" Content="💾 Save" Click="OnSaveClicked" Margin="0,0,6,0"/>
-
             <!-- Overflow menu -->
-            <Button Grid.Column="2" Content="⋯" Click="OnOverflowClicked">
+            <Button Grid.Column="1" Content="⋯" Click="OnOverflowClicked">
                 <Button.Flyout>
                     <MenuFlyout>
                         <MenuItem Header="Import sessions…"    Click="OnImportClicked"/>
@@ -44,10 +42,10 @@
             </Button>
 
             <!-- Settings gear -->
-            <Button Grid.Column="4" Content="⚙" Click="OnSettingsClicked"
+            <Button Grid.Column="3" Content="⚙" Click="OnSettingsClicked"
                     ToolTip.Tip="Settings"
                     Padding="6,2"
-                    FontSize="14"/>
+                    FontSize="18"/>
         </Grid>
 
         <!-- Body: left pane | splitter | terminal tabs -->

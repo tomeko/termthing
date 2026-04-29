@@ -26,7 +26,7 @@
         <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="4,4,4,2">
             <TextBox x:Name="PathBox" Grid.Column="0" FontSize="11" Watermark="Path"
                      KeyDown="OnPathBoxKeyDown" VerticalAlignment="Center"/>
-            <Button x:Name="RefreshButton" Grid.Column="1" Content="⟳" FontSize="13"
+            <Button x:Name="RefreshButton" Grid.Column="1" Content="⟳" FontSize="16"
                     Padding="6,2" Margin="4,0,0,0" Click="OnRefreshClicked"
                     VerticalAlignment="Center"/>
         </Grid>
@@ -156,7 +156,7 @@
                         <TextBlock x:Name="BookmarksHeaderText"
                                    Grid.Column="1"
                                    Text="Bookmarks"
-                                   FontSize="11"
+                                   FontSize="13"
                                    VerticalAlignment="Center"/>
                     </Grid>
                 </Border>

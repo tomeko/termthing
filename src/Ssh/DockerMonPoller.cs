@@ -34,7 +34,56 @@ public sealed class DockerContainerRow : INotifyPropertyChanged
     public string Status { get => _status; set => Set(ref _status, value); }
 
     private string _ports = string.Empty;
-    public string Ports { get => _ports; set => Set(ref _ports, value); }
+    public string Ports
+    {
+        get => _ports;
+        set
+        {
+            if (Equals(_ports, value)) return;
+            _ports = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Ports)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HostPorts)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ContainerPorts)));
+        }
+    }
+
+    /// <summary>Unique host-side ports extracted from the raw docker Ports field, e.g. "8080, 8443".</summary>
+    public string HostPorts => ParseHostPorts(_ports);
+
+    /// <summary>Unique container-side ports/protocols extracted from the raw docker Ports field, e.g. "80/tcp, 443/tcp".</summary>
+    public string ContainerPorts => ParseContainerPorts(_ports);
+
+    private static string ParseHostPorts(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>();
+        foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var arrow = part.IndexOf("->", StringComparison.Ordinal);
+            if (arrow < 0) continue;
+            var host = part[..arrow];
+            var colon = host.LastIndexOf(':');
+            var port = colon >= 0 ? host[(colon + 1)..] : host;
+            if (seen.Add(port)) result.Add(port);
+        }
+        return string.Join(", ", result);
+    }
+
+    private static string ParseContainerPorts(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>();
+        foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var arrow = part.IndexOf("->", StringComparison.Ordinal);
+            if (arrow < 0) continue;
+            var container = part[(arrow + 2)..]; // e.g. "80/tcp"
+            if (seen.Add(container)) result.Add(container);
+        }
+        return string.Join(", ", result);
+    }
 
     private bool _busy;
     /// <summary>True while a stop/restart command is in flight; binds button IsEnabled.</summary>
