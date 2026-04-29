@@ -74,6 +74,7 @@ internal sealed class LocalSessionInstance : ISessionInstance
     }
 
     public Control TabContent => _tc;
+    public TerminalControl? Terminal => _tc;
     public Control? SftpPanel => null;
     public string Title { get; private set; }
     public event EventHandler? SessionEnded;

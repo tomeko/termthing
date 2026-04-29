@@ -39,6 +39,23 @@
                   Margin="6,2,4,4"
                   Checked="OnFollowLocationChecked"/>
 
+        <StackPanel x:Name="MonitorChecksRow"
+                    DockPanel.Dock="Bottom"
+                    Orientation="Horizontal"
+                    Margin="6,0,4,0"
+                    Spacing="10">
+            <CheckBox x:Name="DockerMonCheckBox"
+                      Content="DockerMon"
+                      FontSize="11"
+                      ToolTip.Tip="Show running Docker containers in a panel below the terminal"
+                      IsCheckedChanged="OnDockerMonCheckedChanged"/>
+            <CheckBox x:Name="SysmonCheckBox"
+                      Content="Sysmon"
+                      FontSize="11"
+                      ToolTip.Tip="Show CPU/memory/load stats below the terminal"
+                      IsCheckedChanged="OnSysmonCheckedChanged"/>
+        </StackPanel>
+
         <!-- Transfer progress overlay -->
         <views:TransferProgressOverlay x:Name="TransferOverlay" DockPanel.Dock="Bottom"/>
 
@@ -67,6 +84,7 @@
             <DataGrid.ContextMenu>
                 <ContextMenu Opening="OnContextMenuOpening">
                     <MenuItem x:Name="MenuOpen"       Header="Open"          Click="OnMenuOpenClicked"/>
+                    <MenuItem x:Name="MenuTail"       Header="Tail (live)"   Click="OnMenuTailClicked"/>
                     <MenuItem x:Name="MenuDownloadTo" Header="Download to "/>
                     <MenuItem x:Name="MenuDelete"     Header="Delete"        Click="OnMenuDeleteClicked"/>
                     <Separator/>

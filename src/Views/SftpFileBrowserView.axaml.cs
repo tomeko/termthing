@@ -115,8 +115,11 @@ public partial class SftpFileBrowserView : UserControl
     private Button _refreshButton = null!;
     private DataGrid _filesGrid = null!;
     private CheckBox _followLocationCheckBox = null!;
+    private CheckBox _sysmonCheckBox = null!;
+    private CheckBox _dockerMonCheckBox = null!;
     private TextBlock _statusText = null!;
     private MenuItem _menuOpen = null!;
+    private MenuItem _menuTail = null!;
     private MenuItem _menuDownloadTo = null!;
     private MenuItem _menuDelete = null!;
     private MenuItem _menuProperties = null!;
@@ -150,6 +153,15 @@ public partial class SftpFileBrowserView : UserControl
     // Shell command injection callback (set by SshSessionInstance after shell stream is ready).
     private Action<string>? _sendShellCommand;
 
+    // Remote-monitoring callbacks wired by SshSessionInstance after construction.
+    // Returning false (or completing with false) tells the SFTP view to revert
+    // the corresponding checkbox without firing again.
+    internal Func<bool, bool>? SysmonToggleRequested { get; set; }
+    internal Func<bool, Task<bool>>? DockerMonToggleRequested { get; set; }
+    internal Action<string>? TailFileRequested { get; set; }
+
+    private bool _suppressMonitorEvents;
+
     // Bookmark drag state
     private int? _bookmarkDragSourceIndex;
     private Point _bookmarkDragStartPos;
@@ -181,8 +193,11 @@ public partial class SftpFileBrowserView : UserControl
         _refreshButton         = this.FindControl<Button>("RefreshButton")!;
         _filesGrid             = this.FindControl<DataGrid>("FilesGrid")!;
         _followLocationCheckBox = this.FindControl<CheckBox>("FollowLocationCheckBox")!;
+        _sysmonCheckBox        = this.FindControl<CheckBox>("SysmonCheckBox")!;
+        _dockerMonCheckBox     = this.FindControl<CheckBox>("DockerMonCheckBox")!;
         _statusText            = this.FindControl<TextBlock>("StatusText")!;
         _menuOpen       = this.FindControl<MenuItem>("MenuOpen")!;
+        _menuTail       = this.FindControl<MenuItem>("MenuTail")!;
         _menuDownloadTo = this.FindControl<MenuItem>("MenuDownloadTo")!;
         _menuDelete     = this.FindControl<MenuItem>("MenuDelete")!;
         _menuProperties = this.FindControl<MenuItem>("MenuProperties")!;
@@ -363,6 +378,68 @@ public partial class SftpFileBrowserView : UserControl
             NavigateTo(_lastTerminalDir);
     }
 
+    private void OnSysmonCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        if (_suppressMonitorEvents) return;
+        if (SysmonToggleRequested == null) return;
+        var on = _sysmonCheckBox.IsChecked == true;
+        var ok = SysmonToggleRequested(on);
+        if (!ok && on)
+            SetMonitorChecked(_sysmonCheckBox, false);
+    }
+
+    private async void OnDockerMonCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        if (_suppressMonitorEvents) return;
+        if (DockerMonToggleRequested == null) return;
+        var on = _dockerMonCheckBox.IsChecked == true;
+        // Disable interaction during the docker probe so the user can't double-click.
+        _dockerMonCheckBox.IsEnabled = false;
+        try
+        {
+            var ok = await DockerMonToggleRequested(on);
+            if (!ok && on)
+                SetMonitorChecked(_dockerMonCheckBox, false);
+        }
+        finally
+        {
+            _dockerMonCheckBox.IsEnabled = true;
+        }
+    }
+
+    private async void OnMenuTailClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_filesGrid.SelectedItem is not SftpEntry entry || entry.IsDirectory || entry.IsParentLink)
+            return;
+        TailFileRequested?.Invoke(entry.FullPath);
+        await Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Sets <see cref="SysmonCheckBox"/> / <see cref="DockerMonCheckBox"/> initial
+    /// state from persisted settings without invoking the toggle callback.
+    /// </summary>
+    internal void SetInitialMonitorState(bool sysmonEnabled, bool dockerMonEnabled)
+    {
+        _suppressMonitorEvents = true;
+        try
+        {
+            _sysmonCheckBox.IsChecked    = sysmonEnabled;
+            _dockerMonCheckBox.IsChecked = dockerMonEnabled;
+        }
+        finally
+        {
+            _suppressMonitorEvents = false;
+        }
+    }
+
+    private void SetMonitorChecked(CheckBox cb, bool value)
+    {
+        _suppressMonitorEvents = true;
+        try { cb.IsChecked = value; }
+        finally { _suppressMonitorEvents = false; }
+    }
+
     private void OnRefreshClicked(object? sender, RoutedEventArgs e) => Refresh();
 
     private void OnPathBoxKeyDown(object? sender, KeyEventArgs e)
@@ -403,6 +480,7 @@ public partial class SftpFileBrowserView : UserControl
         bool isDir      = hasEntry && entry!.IsDirectory && !isParent;
 
         _menuOpen.IsEnabled       = isFile && !isParent;
+        _menuTail.IsEnabled       = isFile && !isParent && _sshClient?.IsConnected == true && TailFileRequested != null;
         _menuDownloadTo.IsEnabled = hasEntry && !isParent;
         _menuDelete.IsEnabled     = hasEntry && !isParent;
         _menuProperties.IsVisible = isDir && _sshClient?.IsConnected == true;

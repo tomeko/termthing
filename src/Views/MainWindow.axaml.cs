@@ -638,13 +638,13 @@ public partial class MainWindow : Window, ISessionPromptHost
         TerminalTabs.Items.Add(tab);
         TerminalTabs.SelectedItem = tab;
 
-        FocusTerminal(instance.TabContent);
+        FocusTerminal((Control?)instance.Terminal ?? instance.TabContent);
     }
 
     private void WireSessionInstance(TabState state, ISessionInstance instance)
     {
         // Track title changes from the terminal (OSC title sequences)
-        if (instance.TabContent is TerminalControl tc)
+        if (instance.Terminal is { } tc)
         {
             TerminalView.AddTitleChangedHandler(tc, (_, e) =>
             {
@@ -739,7 +739,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         state.Instance = newInstance;
         state.Host.Children.Add(newInstance.TabContent);
         WireSessionInstance(state, newInstance);
-        FocusTerminal(newInstance.TabContent);
+        FocusTerminal((Control?)newInstance.Terminal ?? newInstance.TabContent);
     }
 
     private async Task CloseTabAsync(TabItem tab)
@@ -775,7 +775,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         if (state.FloatingWindow != null) return; // already floating
 
         // Tell the terminal control not to kill the PTY on detach.
-        if (state.Instance?.TabContent is TerminalControl tcOut)
+        if (state.Instance?.Terminal is { } tcOut)
             tcOut.BeginReparent();
 
         // Detach content from the TabItem so the host Panel can be re-parented.
@@ -814,7 +814,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         win.Show();
 
         // EndReparent after the control has been re-attached to the new visual tree.
-        if (state.Instance?.TabContent is TerminalControl tcEnd)
+        if (state.Instance?.Terminal is { } tcEnd)
             Dispatcher.UIThread.Post(() => tcEnd.EndReparent(), DispatcherPriority.Loaded);
     }
 
@@ -828,7 +828,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         if (win == null) return;
 
         // Tell the terminal control not to kill the PTY on detach from the floating window.
-        if (state.Instance?.TabContent is TerminalControl tcIn)
+        if (state.Instance?.Terminal is { } tcIn)
             tcIn.BeginReparent();
 
         // Detach hosted controls from the floating window before re-parenting.
@@ -846,12 +846,12 @@ public partial class MainWindow : Window, ISessionPromptHost
         win.Close();
 
         // EndReparent after re-attachment.
-        if (state.Instance?.TabContent is TerminalControl tcDone)
+        if (state.Instance?.Terminal is { } tcDone)
             Dispatcher.UIThread.Post(() => tcDone.EndReparent(), DispatcherPriority.Loaded);
 
         // OnTabSelectionChanged fires and restores the SFTP panel if applicable.
         // Also focus the terminal.
-        if (state.Instance?.TabContent is { } tc)
+        if (state.Instance?.Terminal is { } tc)
             FocusTerminal(tc);
     }
 
@@ -875,7 +875,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         _tabStates.TryGetValue(selected, out var selState);
 
         // Focus the active terminal (skip when a disconnect overlay is showing)
-        if (selState?.Overlay is null && selState?.Instance?.TabContent is { } term)
+        if (selState?.Overlay is null && (selState?.Instance?.Terminal as Control ?? selState?.Instance?.TabContent) is { } term)
         {
             if (term.IsLoaded)
                 Dispatcher.UIThread.Post(() => term.Focus(), DispatcherPriority.Background);

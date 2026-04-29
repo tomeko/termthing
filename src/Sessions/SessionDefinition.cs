@@ -85,6 +85,15 @@ public record SshSettings : SessionSettings
     /// <summary>Pinned remote folder paths shown in the SFTP bookmarks panel.</summary>
     public List<Bookmark> Bookmarks { get; init; } = [];
 
+    /// <summary>Whether the Sysmon stats strip is shown for this session.</summary>
+    public bool SysmonEnabled { get; init; }
+
+    /// <summary>Whether the DockerMon container panel is shown for this session.</summary>
+    public bool DockerMonEnabled { get; init; }
+
+    /// <summary>Reserved for future per-session DockerMon panel height (px).</summary>
+    public double DockerMonHeightPx { get; init; }
+
     // Secrets are never persisted — always prompted at connect time.
     [JsonIgnore] public string? TransientPassword { get; set; }
     [JsonIgnore] public string? TransientKeyPassphrase { get; set; }

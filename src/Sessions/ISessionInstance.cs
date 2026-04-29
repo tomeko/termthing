@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Iciclecreek.Terminal;
 
 namespace TermThing.Sessions;
 
@@ -8,8 +9,11 @@ namespace TermThing.Sessions;
 /// </summary>
 public interface ISessionInstance : IDisposable
 {
-    /// <summary>The control to place as the tab's Content.</summary>
+    /// <summary>The control to place as the tab's Content. May be a wrapper panel hosting <see cref="Terminal"/>.</summary>
     Control TabContent { get; }
+
+    /// <summary>The actual <see cref="TerminalControl"/> inside <see cref="TabContent"/> (null when the session has no terminal).</summary>
+    TerminalControl? Terminal { get; }
 
     /// <summary>Optional SFTP browser panel (null when not applicable).</summary>
     Control? SftpPanel { get; }

@@ -265,10 +265,23 @@ public sealed class SshSessionLauncher : ISessionLauncher
 internal sealed class SshSessionInstance : ISessionInstance
 {
     private readonly TerminalControl _tc;
+    private readonly DockPanel _hostPanel;
+    private readonly ContentControl _sysmonSlot;
+    private readonly ContentControl _dockerMonSlot;
     private readonly SshClient _client;
     private readonly SftpClient? _sftpClient;
     private readonly SftpFileBrowserView? _sftpView;
     private readonly SshChainResult? _chain;
+    private readonly SessionDefinition? _definition;
+    private readonly Action? _saveConfig;
+
+    private SysmonPoller? _sysmonPoller;
+    private SysmonPanel? _sysmonPanel;
+    private DockerMonPoller? _dockerMonPoller;
+    private DockerMonPanel? _dockerMonPanel;
+
+    private readonly List<LogTailWindow> _tailWindows = new();
+    private bool _connectionEnded;
 
     public SshSessionInstance(
         TerminalControl  tc,
@@ -285,11 +298,36 @@ internal sealed class SshSessionInstance : ISessionInstance
         _tc = tc;
         _client = client;
         _sftpClient = sftpClient;
+        _definition = definition;
+        _saveConfig = saveConfig;
         Title = title;
+
+        // Wrap the terminal in a DockPanel so we can dock Sysmon/DockerMon rows
+        // below it. Order matters: Sysmon docked first → outermost-bottom edge;
+        // DockerMon docked second → above Sysmon; terminal fills remaining space.
+        _sysmonSlot    = new ContentControl { IsVisible = false };
+        _dockerMonSlot = new ContentControl { IsVisible = false, Height = 200 };
+        DockPanel.SetDock(_sysmonSlot, Dock.Bottom);
+        DockPanel.SetDock(_dockerMonSlot, Dock.Bottom);
+        _hostPanel = new DockPanel { LastChildFill = true };
+        _hostPanel.Children.Add(_sysmonSlot);
+        _hostPanel.Children.Add(_dockerMonSlot);
+        _hostPanel.Children.Add(_tc);
 
         if (sftpClient != null)
         {
             _sftpView = new SftpFileBrowserView(sftpClient, client, editors, definition, saveConfig);
+
+            // Wire monitor + tail callbacks before anything fires.
+            _sftpView.SysmonToggleRequested    = on => TrySetSysmonEnabled(on);
+            _sftpView.DockerMonToggleRequested = on => TrySetDockerMonEnabledAsync(on);
+            _sftpView.TailFileRequested        = OpenTailWindow;
+
+            // Restore persisted toggle state from session settings.
+            var ss = definition?.Settings as SshSettings;
+            _sftpView.SetInitialMonitorState(ss?.SysmonEnabled == true, ss?.DockerMonEnabled == true);
+            if (ss?.SysmonEnabled == true)    TrySetSysmonEnabled(true);
+            if (ss?.DockerMonEnabled == true) _ = TrySetDockerMonEnabledAsync(true);
 
             // Navigate to home directory once the SFTP handshake completes.
             // sftpConnectTask may already be completed (synchronous path) or still
@@ -324,8 +362,20 @@ internal sealed class SshSessionInstance : ISessionInstance
     {
         connection.ConnectionClosed += (_, _) =>
         {
+            _connectionEnded = true;
+            _sysmonPoller?.Dispose();
+            _dockerMonPoller?.Dispose();
             _sftpClient?.Dispose();
-            Dispatcher.UIThread.Post(() => SessionEnded?.Invoke(this, EventArgs.Empty));
+            // Close any open tail windows — their underlying exec channels are dead.
+            Dispatcher.UIThread.Post(() =>
+            {
+                foreach (var w in _tailWindows.ToArray())
+                {
+                    try { w.Close(); } catch { }
+                }
+                _tailWindows.Clear();
+                SessionEnded?.Invoke(this, EventArgs.Empty);
+            });
         };
     }
 
@@ -338,13 +388,116 @@ internal sealed class SshSessionInstance : ISessionInstance
         _sftpView?.SetShellCommand(sendCommand);
     }
 
-    public Control TabContent => _tc;
+    public Control TabContent => _hostPanel;
+    public TerminalControl? Terminal => _tc;
     public Control? SftpPanel => _sftpView;
     public string Title { get; private set; }
     public event EventHandler? SessionEnded;
 
+    // -----------------------------------------------------------------------
+    // Sysmon / DockerMon / Tail integration
+    // -----------------------------------------------------------------------
+
+    private bool TrySetSysmonEnabled(bool on)
+    {
+        if (_connectionEnded) return false;
+        if (on)
+        {
+            if (_sysmonPanel == null)
+            {
+                _sysmonPanel = new SysmonPanel();
+                _sysmonSlot.Content = _sysmonPanel;
+            }
+            if (_sysmonPoller == null)
+            {
+                _sysmonPoller = new SysmonPoller(_client, TimeSpan.FromSeconds(2));
+                _sysmonPoller.SnapshotReceived += (_, snap) => _sysmonPanel?.Update(snap);
+            }
+            _sysmonSlot.IsVisible = true;
+            PersistMonitorState();
+            return true;
+        }
+        else
+        {
+            _sysmonPoller?.Dispose();
+            _sysmonPoller = null;
+            _sysmonSlot.IsVisible = false;
+            PersistMonitorState();
+            return true;
+        }
+    }
+
+    private async Task<bool> TrySetDockerMonEnabledAsync(bool on)
+    {
+        if (_connectionEnded) return false;
+        if (on)
+        {
+            // Probe docker first; show an alert and bail if it isn't installed.
+            var probe = new DockerMonPoller(_client, TimeSpan.FromSeconds(3));
+            var ok = await probe.ProbeAsync();
+            if (!ok)
+            {
+                probe.Dispose();
+                var owner = TopLevel.GetTopLevel(_hostPanel) as Window;
+                await MessageDialog.ShowAsync(owner, "Docker not available",
+                    "Docker is not installed (or not on PATH) on the remote host. " +
+                    "DockerMon requires the `docker` CLI.");
+                return false;
+            }
+            _dockerMonPoller = probe;
+            _dockerMonPanel = new DockerMonPanel(_dockerMonPoller);
+            _dockerMonSlot.Content = _dockerMonPanel;
+            _dockerMonSlot.IsVisible = true;
+            _dockerMonPoller.Start();
+            PersistMonitorState();
+            return true;
+        }
+        else
+        {
+            _dockerMonPoller?.Dispose();
+            _dockerMonPoller = null;
+            _dockerMonPanel = null;
+            _dockerMonSlot.Content = null;
+            _dockerMonSlot.IsVisible = false;
+            PersistMonitorState();
+            return true;
+        }
+    }
+
+    private void OpenTailWindow(string remotePath)
+    {
+        if (_connectionEnded || !_client.IsConnected) return;
+        var source = new SshTailLogSource(_client, remotePath);
+        var window = new LogTailWindow(source, remotePath);
+        _tailWindows.Add(window);
+        window.Closed += (_, _) => _tailWindows.Remove(window);
+        var owner = TopLevel.GetTopLevel(_hostPanel) as Window;
+        if (owner != null) window.Show(owner);
+        else window.Show();
+    }
+
+    private void PersistMonitorState()
+    {
+        if (_definition?.Settings is not SshSettings ss || _saveConfig == null) return;
+        bool sys = _sysmonSlot.IsVisible;
+        bool dock = _dockerMonSlot.IsVisible;
+        if (ss.SysmonEnabled == sys && ss.DockerMonEnabled == dock) return;
+        _definition.Settings = ss with { SysmonEnabled = sys, DockerMonEnabled = dock };
+        _saveConfig();
+    }
+
     public void Kill()
     {
+        // Stop pollers and close tail windows first so background exec channels
+        // don't try to read from a torn-down client.
+        try { _sysmonPoller?.Dispose();    } catch { }
+        try { _dockerMonPoller?.Dispose(); } catch { }
+        foreach (var w in _tailWindows.ToArray())
+        {
+            try { w.Close(); } catch { }
+        }
+        _tailWindows.Clear();
+
         // 1. Disconnect the final-target SSH client — tears down the shell stream.
         try { if (_client.IsConnected) _client.Disconnect(); } catch { }
         try { _client.Dispose(); } catch { }
