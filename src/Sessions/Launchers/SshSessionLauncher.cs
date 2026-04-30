@@ -103,8 +103,24 @@ public sealed class SshSessionLauncher : ISessionLauncher
             };
 
             var connectSw = Stopwatch.StartNew();
-            await Task.Run(() => { try { client.Connect(); } catch { } }, cancellationToken);
+            Exception? firstConnectError = null;
+            await Task.Run(() =>
+            {
+                try { client.Connect(); }
+                catch (Exception ex) { firstConnectError = ex; }
+            }, cancellationToken);
             Debug.WriteLine($"[SSH] Connect: {connectSw.ElapsedMilliseconds}ms  kex={connectionInfo.CurrentKeyExchangeAlgorithm}  cipher={connectionInfo.CurrentServerEncryption}");
+
+            // Only swallow the connect failure when it was caused by an untrusted host
+            // key (so we can show the prompt and retry). Anything else — auth failure,
+            // bad passphrase, network error — must surface so the user sees what's wrong
+            // instead of getting a half-initialised, blank terminal tab.
+            if (firstConnectError is not null && pendingKeyArgs is null)
+            {
+                client.Dispose();
+                Debug.WriteLine($"[SSH] Connect failed: {firstConnectError.GetType().Name}: {firstConnectError.Message}");
+                throw EnrichAuthException(firstConnectError, settings);
+            }
 
             if (pendingKeyArgs is not null)
             {
@@ -122,7 +138,16 @@ public sealed class SshSessionLauncher : ISessionLauncher
                 client.Dispose();
                 client = new SshClient(connectionInfo);
                 client.HostKeyReceived += (_, e) => e.CanTrust = true;
-                await Task.Run(() => client.Connect(), cancellationToken);
+                try
+                {
+                    await Task.Run(() => client.Connect(), cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    client.Dispose();
+                    Debug.WriteLine($"[SSH] Retry connect after host-key trust failed: {ex.GetType().Name}: {ex.Message}");
+                    throw EnrichAuthException(ex, settings);
+                }
             }
         }
         else
@@ -211,7 +236,27 @@ public sealed class SshSessionLauncher : ISessionLauncher
             var tcs = new TaskCompletionSource<bool>();
             tc.Loaded += (_, _) => tcs.TrySetResult(true);
             var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors, definition, _saveConfig);
-            _ = CompleteConnectionAsync(tc, client, sftpClient, settings, tcs.Task, instance);
+            // Fire-and-forget by necessity (we have to return the instance before the
+            // control is loaded), but observe the task so failures aren't silent —
+            // they would otherwise leave a blank terminal that can't accept input.
+            _ = CompleteConnectionAsync(tc, client, sftpClient, settings, tcs.Task, instance)
+                .ContinueWith(t =>
+                {
+                    if (t.Exception is { } ex)
+                    {
+                        var inner = ex.GetBaseException();
+                        Debug.WriteLine($"[SSH] CompleteConnectionAsync failed: {inner.GetType().Name}: {inner.Message}");
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            try
+                            {
+                                var msg = $"\r\n\u001b[1;31mSSH session failed: {inner.GetType().Name}: {inner.Message}\u001b[0m\r\n";
+                                tc.Terminal?.Write(msg);
+                            }
+                            catch { }
+                        });
+                    }
+                }, TaskScheduler.Default);
             return instance;
         }
 
@@ -244,6 +289,41 @@ public sealed class SshSessionLauncher : ISessionLauncher
             await Task.Run(() => shell.WriteLine(
                 "PROMPT_COMMAND='printf \"\\033]7;file://${HOSTNAME}${PWD}\\007\"'"));
         }
+    }
+
+    /// <summary>
+    /// Wrap an SSH.NET authentication failure with a clearer, actionable message.
+    /// SSH.NET's <see cref="SshAuthenticationException"/> for a public-key auth
+    /// rejection is just <c>"Permission denied (publickey)."</c>, which is ambiguous —
+    /// it can mean the passphrase decrypted to the wrong key, the key isn't in the
+    /// server's <c>authorized_keys</c>, or the username is wrong. This rewrite
+    /// surfaces those possibilities in the error dialog so the user has somewhere
+    /// to look first.
+    /// </summary>
+    private static Exception EnrichAuthException(Exception ex, SshSettings settings)
+    {
+        if (ex is not SshAuthenticationException auth)
+            return ex;
+
+        var hasKey      = !string.IsNullOrWhiteSpace(settings.KeyFilePath);
+        var hasPassword = !string.IsNullOrEmpty(settings.TransientPassword);
+        var detail = (hasKey, hasPassword) switch
+        {
+            (true,  false) =>
+                $"{auth.Message}\n\nThe server rejected your private key for user '{settings.Username}'. " +
+                "Common causes:\n" +
+                "  • The matching public key is not in ~/.ssh/authorized_keys on the server\n" +
+                "  • The wrong username (verify with: ssh -v -i <key> user@host)\n" +
+                "  • The key file path points at a different key than you expect\n\n" +
+                "Tip: 'ssh-copy-id -i <key>.pub user@host' adds the key to the server.",
+            (false, true) =>
+                $"{auth.Message}\n\nThe server rejected the password for user '{settings.Username}'.",
+            (true,  true) =>
+                $"{auth.Message}\n\nNeither the key nor the password were accepted for user '{settings.Username}'.",
+            _ =>
+                $"{auth.Message}\n\nNo credentials were supplied for user '{settings.Username}'.",
+        };
+        return new SshAuthenticationException(detail);
     }
 
     private static async Task<(HostKeyAction, HostKeyEventArgs)> PromptHostKeyAsync(
