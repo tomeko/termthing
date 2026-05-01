@@ -14,6 +14,13 @@ public partial class SessionTreeView : UserControl
     // Raised when the user requests editing a session's settings
     public event EventHandler<SessionDefinition>? SessionEditRequested;
 
+    /// <summary>
+    /// Raised when the user picks <i>New Session ▸ SSH</i> from the context menu.
+    /// MainWindow handles this by opening the full SSH connection dialog and
+    /// adding the resulting saved session to the supplied group.
+    /// </summary>
+    public event EventHandler<SessionGroup>? SshSessionCreateRequested;
+
     // Raised when the tree data changes (add/rename/delete/move/duplicate)
     public event EventHandler? TreeChanged;
 
@@ -43,7 +50,7 @@ public partial class SessionTreeView : UserControl
         // Build the context menu in code so we hold direct references to
         // selection-sensitive items and can enable/disable them reliably.
         var mnuNewLocal   = new MenuItem { Header = "🖥 Local…"  }; mnuNewLocal.Click   += (_, _) => NewSession(SessionKind.Local);
-        var mnuNewSsh     = new MenuItem { Header = "🌐 SSH…"    }; mnuNewSsh.Click     += (_, _) => NewSession(SessionKind.Ssh);
+        var mnuNewSsh     = new MenuItem { Header = "🌐 SSH…"    }; mnuNewSsh.Click     += (_, _) => SshSessionCreateRequested?.Invoke(this, SelectedGroup() ?? RootGroup!);
         var mnuNewSerial  = new MenuItem { Header = "🔌 Serial…" }; mnuNewSerial.Click  += (_, _) => NewSession(SessionKind.Serial);
 
         var mnuNewSession = new MenuItem { Header = "New Session" };
@@ -149,6 +156,21 @@ public partial class SessionTreeView : UserControl
             },
         };
         group.Sessions.Add(def);
+        RebuildTree();
+        TreeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Adds <paramref name="def"/> to <paramref name="group"/> (or root if null),
+    /// rebuilds the tree, and raises <see cref="TreeChanged"/>. Used by
+    /// MainWindow after the SSH connect dialog returns successfully from the
+    /// <see cref="SshSessionCreateRequested"/> handler.
+    /// </summary>
+    public void AddSessionToGroup(SessionGroup? group, SessionDefinition def)
+    {
+        var target = group ?? RootGroup!;
+        def.GroupId = target.Id;
+        target.Sessions.Add(def);
         RebuildTree();
         TreeChanged?.Invoke(this, EventArgs.Empty);
     }

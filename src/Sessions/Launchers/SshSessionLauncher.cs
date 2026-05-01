@@ -40,9 +40,12 @@ public sealed class SshSessionLauncher : ISessionLauncher
             ?? throw new InvalidOperationException("SshSettings required.");
 
         // Show the full credentials dialog only when there's nothing to work with —
-        // no key file and no cached password. Key-only sessions go straight to connect;
-        // if the key turns out to be encrypted we'll prompt for just the passphrase below.
-        bool needsPrompt = string.IsNullOrWhiteSpace(settings.KeyFilePath)
+        // no key file and no cached password — AND the user hasn't just been shown
+        // the same dialog from the New-SSH flow. Key-only sessions go straight to
+        // connect; if the key turns out to be encrypted we'll prompt for just the
+        // passphrase below.
+        bool needsPrompt = !settings.TransientSecretsConfirmed
+                        && string.IsNullOrWhiteSpace(settings.KeyFilePath)
                         && string.IsNullOrEmpty(settings.TransientPassword);
         if (needsPrompt)
         {

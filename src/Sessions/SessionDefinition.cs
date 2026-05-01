@@ -97,6 +97,13 @@ public record SshSettings : SessionSettings
     // Secrets are never persisted — always prompted at connect time.
     [JsonIgnore] public string? TransientPassword { get; set; }
     [JsonIgnore] public string? TransientKeyPassphrase { get; set; }
+
+    /// <summary>
+    /// Set to true when the user has just been shown the SSH credentials dialog
+    /// (e.g. via File ▸ New SSH) so the launcher does not re-prompt with an
+    /// identical-looking dialog. Not persisted.
+    /// </summary>
+    [JsonIgnore] public bool TransientSecretsConfirmed { get; set; }
 }
 
 public record SerialSettings : SessionSettings

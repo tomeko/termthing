@@ -20,5 +20,12 @@ public sealed class AppSettings
     /// </summary>
     public List<FileAssociation> FileAssociations { get; set; } = [];
 
+    /// <summary>
+    /// Whether to show a confirmation dialog when closing the main window
+    /// while one or more session tabs (or unsaved SFTP editors) are open.
+    /// Toggleable from the confirmation dialog itself or the Settings window.
+    /// </summary>
+    public bool ConfirmExitWithOpenSessions { get; set; } = true;
+
     // Future: terminal prefs (font family, colour theme, etc.) will live here.
 }

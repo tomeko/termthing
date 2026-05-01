@@ -85,6 +85,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         SessionTree.SetRoot(_config.RootGroup);
         SessionTree.SessionLaunchRequested += OnSessionLaunchRequested;
         SessionTree.SessionEditRequested   += OnSessionEditRequestedAsync;
+        SessionTree.SshSessionCreateRequested += OnSshSessionCreateRequestedAsync;
         SessionTree.TreeChanged += OnTreeChanged;
 
         // Restore layout from TempSettings once the window is loaded
@@ -135,7 +136,7 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         // Mutate the transient fields — not persisted
         settings.TransientPassword = dialog.Password;
-        settings.TransientKeyPassphrase = dialog.KeyPassphrase;
+        settings.TransientSecretsConfirmed = true;
         definition.Settings = settings with { };
         return true;
     }
@@ -334,7 +335,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             KeyFilePath = dialog.KeyFile,
             EnableSftp = dialog.EnableSftp,
             TransientPassword = dialog.Password,
-            TransientKeyPassphrase = dialog.KeyPassphrase,
+            TransientSecretsConfirmed = true,
             JumpHosts = [.. dialog.JumpHosts],
         };
 
@@ -481,6 +482,39 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         def.Settings = updated;
         SessionTree.SetRoot(_config.RootGroup);
+        SaveConfig();
+    }
+
+    private async void OnSshSessionCreateRequestedAsync(object? sender, SessionGroup targetGroup)
+    {
+        // Reuse the standard New-SSH dialog so the user gets the same fields
+        // (host/user/key/jump-hosts) as the toolbar entry point. The session is
+        // saved into the group they right-clicked, but not auto-launched.
+        var dialog = new SshConnectDialog(editMode: false, appConfig: _config);
+        var ok = await dialog.ShowDialog<bool?>(this);
+        if (ok != true || string.IsNullOrWhiteSpace(dialog.Host)) return;
+
+        var settings = new SshSettings
+        {
+            Host        = dialog.Host!,
+            Port        = dialog.Port,
+            Username    = dialog.Username!,
+            KeyFilePath = dialog.KeyFile,
+            EnableSftp  = dialog.EnableSftp,
+            JumpHosts   = [.. dialog.JumpHosts],
+        };
+
+        var sessionName = string.IsNullOrWhiteSpace(dialog.SessionName)
+            ? $"{dialog.Username}@{dialog.Host}"
+            : dialog.SessionName;
+        var def = new SessionDefinition
+        {
+            Name     = sessionName,
+            Kind     = SessionKind.Ssh,
+            Settings = settings,
+        };
+
+        SessionTree.AddSessionToGroup(targetGroup, def);
         SaveConfig();
     }
 
@@ -933,8 +967,22 @@ public partial class MainWindow : Window, ISessionPromptHost
     // Window lifecycle
     // -----------------------------------------------------------------------
 
+    // Set once the user has confirmed (or no confirmation was needed) so the
+    // second Closing event we get after Close() runs straight through.
+    private bool _exitConfirmed;
+
     protected override void OnClosing(WindowClosingEventArgs e)
     {
+        if (!_exitConfirmed
+            && SettingsService.App.ConfirmExitWithOpenSessions
+            && (_tabStates.Count > 0 || _editors.GetDirtyEditorTitles().Count > 0))
+        {
+            // Defer close until the user answers the dialog.
+            e.Cancel = true;
+            _ = ConfirmAndCloseAsync();
+            return;
+        }
+
         foreach (var state in _tabStates.Values)
         {
             try { state.Instance?.Kill(); } catch { }
@@ -959,6 +1007,24 @@ public partial class MainWindow : Window, ISessionPromptHost
         SaveConfig();
         base.OnClosing(e);
         Environment.Exit(0);
+    }
+
+    private async Task ConfirmAndCloseAsync()
+    {
+        var dirtyTitles = _editors.GetDirtyEditorTitles();
+        var dialog      = new ExitConfirmDialog(_tabStates.Count, dirtyTitles);
+        var result      = await dialog.ShowDialog<bool?>(this);
+
+        if (result != true) return; // user cancelled — keep window open
+
+        if (dialog.DontAskAgain)
+        {
+            SettingsService.App.ConfirmExitWithOpenSessions = false;
+            SettingsService.SaveApp();
+        }
+
+        _exitConfirmed = true;
+        Close();
     }
 
     // -----------------------------------------------------------------------

@@ -38,6 +38,7 @@ public partial class SettingsWindow : Window
 
     private NumericUpDown _recentCount = null!;
     private DataGrid _assocGrid = null!;
+    private CheckBox _confirmExit = null!;
 
     // True when the user pressed OK
     public bool Committed { get; private set; }
@@ -48,9 +49,11 @@ public partial class SettingsWindow : Window
 
         _recentCount = this.FindControl<NumericUpDown>("RecentCountSpinner")!;
         _assocGrid   = this.FindControl<DataGrid>("AssocGrid")!;
+        _confirmExit = this.FindControl<CheckBox>("ConfirmExitCheckBox")!;
 
         // Populate from current settings
         _recentCount.Value = SettingsService.App.RecentSessionsCount;
+        _confirmExit.IsChecked = SettingsService.App.ConfirmExitWithOpenSessions;
 
         foreach (var a in SettingsService.App.FileAssociations)
             _rows.Add(FileAssociationRow.FromAssociation(a));
@@ -87,6 +90,7 @@ public partial class SettingsWindow : Window
         _assocGrid.CommitEdit(DataGridEditingUnit.Row, exitEditingMode: true);
 
         SettingsService.App.RecentSessionsCount = (int)(_recentCount.Value ?? 10);
+        SettingsService.App.ConfirmExitWithOpenSessions = _confirmExit.IsChecked == true;
         SettingsService.App.FileAssociations =
             _rows.Where(r => !string.IsNullOrWhiteSpace(r.Extension) &&
                              !string.IsNullOrWhiteSpace(r.AppPath))

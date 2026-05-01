@@ -47,13 +47,6 @@
             <Button Grid.Column="2" Content="…" Margin="4,0,0,0" Click="OnBrowseKeyClicked"/>
         </Grid>
 
-        <!-- Key passphrase (connect mode only) -->
-        <Grid ColumnDefinitions="130,*" Margin="0,0,0,6"
-              IsVisible="{Binding !IsVisible, ElementName=NameRow}">
-            <TextBlock Grid.Column="0" Text="Key passphrase:" VerticalAlignment="Center"/>
-            <TextBox Grid.Column="1" x:Name="KeyPassphraseTextBox" PasswordChar="*"/>
-        </Grid>
-
         <!-- SFTP -->
         <CheckBox x:Name="SftpCheckBox" Content="Enable SFTP browser" Margin="0,0,0,6"/>
 

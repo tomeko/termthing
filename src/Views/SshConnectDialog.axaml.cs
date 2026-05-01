@@ -30,6 +30,12 @@ public partial class SshConnectDialog : Window
     private readonly bool         _editMode;
     private readonly AppConfig?   _appConfig;
 
+    // Session-name auto-fill state (connect mode only):
+    // we keep mirroring "{user}@{host}" into SessionNameTextBox until the
+    // user manually edits the name field, then we leave it alone.
+    private bool _sessionNameTouched;
+    private bool _suppressSessionNameUpdate;
+
     // Jump-host list (edit mode only)
     private readonly ObservableCollection<JumpHostListItem> _jumpItems = [];
 
@@ -39,7 +45,6 @@ public partial class SshConnectDialog : Window
     public string? Username        { get; private set; }
     public string? Password        { get; private set; }
     public string? KeyFile         { get; private set; }
-    public string? KeyPassphrase   { get; private set; }
     public bool    EnableSftp      { get; private set; }
     public bool    SaveAsSession   { get; private set; }
     public string? SessionName     { get; private set; }
@@ -62,6 +67,10 @@ public partial class SshConnectDialog : Window
 
         JumpHostListBox.ItemsSource  = _jumpItems;
 
+        // SFTP browser is on by default for new SSH sessions; prefill (if any)
+        // overrides this immediately below.
+        SftpCheckBox.IsChecked = true;
+
         if (prefill is not null)
         {
             HostTextBox.Text     = prefill.Host;
@@ -76,6 +85,36 @@ public partial class SshConnectDialog : Window
 
         Title = editMode ? "Edit SSH Session" : "SSH Connection";
         ConnectButton.Content = editMode ? "Save" : "Connect";
+
+        // Connect-mode only: live-update the Session name field with
+        // "{user}@{host}" until the user types into it themselves.
+        if (!editMode)
+        {
+            HostTextBox.TextChanged       += OnHostOrUsernameChanged;
+            UsernameTextBox.TextChanged   += OnHostOrUsernameChanged;
+            SessionNameTextBox.TextChanged += OnSessionNameChanged;
+        }
+    }
+
+    private void OnHostOrUsernameChanged(object? sender, Avalonia.Controls.TextChangedEventArgs e)
+    {
+        if (_sessionNameTouched) return;
+
+        var host = HostTextBox.Text?.Trim() ?? string.Empty;
+        var user = UsernameTextBox.Text?.Trim() ?? string.Empty;
+        var auto = (host.Length == 0 && user.Length == 0)
+            ? string.Empty
+            : $"{user}@{host}";
+
+        _suppressSessionNameUpdate = true;
+        try { SessionNameTextBox.Text = auto; }
+        finally { _suppressSessionNameUpdate = false; }
+    }
+
+    private void OnSessionNameChanged(object? sender, Avalonia.Controls.TextChangedEventArgs e)
+    {
+        if (_suppressSessionNameUpdate) return;
+        _sessionNameTouched = true;
     }
 
     // -----------------------------------------------------------------------
@@ -128,7 +167,6 @@ public partial class SshConnectDialog : Window
         else
         {
             Password     = PasswordTextBox.Text;
-            KeyPassphrase = KeyPassphraseTextBox.Text;
             SaveAsSession = SaveAsSessionCheckBox.IsChecked != true;
             SessionName   = SessionNameTextBox.Text?.Trim();
             if (SaveAsSession && string.IsNullOrWhiteSpace(SessionName))

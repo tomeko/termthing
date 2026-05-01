@@ -80,6 +80,18 @@ public sealed class EditorRegistry
             Dispatcher.UIThread.Post(() => kvp.Value.NotifySessionEnded());
     }
 
+    /// <summary>
+    /// Returns the display titles of every open editor window that has unsaved
+    /// changes. Used by the main-window exit-confirmation dialog.
+    /// </summary>
+    public IReadOnlyList<string> GetDirtyEditorTitles()
+    {
+        return _windows.Values
+            .Where(w => w.IsDirty)
+            .Select(w => w.Title ?? string.Empty)
+            .ToList();
+    }
+
     // -----------------------------------------------------------------------
 
     private static void BringToFront(Window win)

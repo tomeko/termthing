@@ -39,6 +39,13 @@
                                        Width="110"
                                        VerticalAlignment="Center"/>
                     </StackPanel>
+
+                    <TextBlock Text="Exit"
+                               FontWeight="SemiBold"
+                               Margin="0,8,0,2"/>
+
+                    <CheckBox x:Name="ConfirmExitCheckBox"
+                              Content="Confirm before exiting when sessions are open"/>
                 </StackPanel>
             </TabItem>
 
