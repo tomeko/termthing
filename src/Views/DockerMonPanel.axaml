@@ -6,6 +6,12 @@
         <Style Selector="DataGridCell">
             <Setter Property="FocusAdorner" Value="{x:Null}"/>
         </Style>
+        <Style Selector="DataGridCell:focus /template/ Grid#FocusVisual">
+            <Setter Property="IsVisible" Value="False"/>
+        </Style>
+        <Style Selector="DataGridCell:current /template/ Rectangle#CurrencyVisual">
+            <Setter Property="IsVisible" Value="False"/>
+        </Style>
     </UserControl.Styles>
     <Border BorderBrush="#333" BorderThickness="0,1,0,0">
         <DockPanel>

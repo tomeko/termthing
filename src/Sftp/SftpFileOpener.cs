@@ -9,10 +9,12 @@ namespace TermThing.Sftp;
 /// <summary>
 /// Handles the "Open" action for remote files in the SFTP browser.
 ///
-/// Decision tree:
-/// 1. A matching <see cref="FileAssociation"/> exists → external app (existing behaviour).
-/// 2. Extension is in the binary list → show <see cref="OpenWithDialog"/> (existing behaviour).
-/// 3. Otherwise → open in the built-in text editor via <see cref="EditorRegistry"/>.
+/// Decision tree for double-click (<see cref="OpenAsync"/>):
+/// 1. A default <see cref="ApplicationEntry"/> matches the extension → open with that app.
+/// 2. Binary extension with no default → open via OS default handler.
+/// 3. Text file with no default → built-in text editor.
+///
+/// Explicit pick (<see cref="OpenWithEntryAsync"/>) routes directly to the chosen entry.
 /// </summary>
 public sealed class SftpFileOpener
 {
@@ -37,41 +39,62 @@ public sealed class SftpFileOpener
     }
 
     /// <summary>
-    /// Opens <paramref name="remotePath"/>, routing to the external app, the
-    /// OS open-with dialog, or the built-in text editor as appropriate.
+    /// Opens <paramref name="remotePath"/> using the default application for its extension,
+    /// or falls back to the built-in editor (text) / OS handler (binary).
     /// </summary>
     public async Task OpenAsync(string remotePath)
     {
         var fileName  = Path.GetFileName(remotePath);
         var extension = Path.GetExtension(fileName).ToLowerInvariant();
 
-        // ── 1. Registered file association → external app ──────────────────
-        var assoc = SettingsService.App.FileAssociations
-            .FirstOrDefault(a => string.Equals(a.Extension, extension, StringComparison.OrdinalIgnoreCase));
+        // 1. Default ApplicationEntry for this extension
+        var defaultEntry = SettingsService.App.Applications
+            .FirstOrDefault(a => a.IsDefault &&
+                                 (a.Extensions.Count == 0 ||
+                                  a.Extensions.Contains(extension)));
 
-        if (assoc != null)
+        if (defaultEntry != null)
         {
-            var localPath = await DownloadToTempAsync(remotePath, fileName);
-            OsFileLauncher.LaunchWith(assoc.AppPath, assoc.Args, localPath);
+            await OpenWithEntryAsync(remotePath, defaultEntry);
             return;
         }
 
-        // ── 2. Known binary extension → OS open-with dialog ─────────────────
+        // 2. Binary with no default → OS default handler
         if (BinaryExtensions.IsLikelyBinary(extension))
         {
-            await ShowOpenWithDialogAsync(remotePath, fileName, extension);
+            var localPath = await DownloadToTempAsync(remotePath, fileName);
+            OsFileLauncher.OpenWithOsDialog(localPath);
             return;
         }
 
-        // ── 3. Text file → built-in editor ──────────────────────────────────
+        // 3. Text file → built-in editor
         if (_editors != null)
         {
             await OpenInBuiltInEditorAsync(remotePath, fileName);
             return;
         }
 
-        // Fallback when no EditorRegistry is available (shouldn't happen in normal usage)
-        await ShowOpenWithDialogAsync(remotePath, fileName, extension);
+        // Fallback: OS handler
+        var fallbackPath = await DownloadToTempAsync(remotePath, fileName);
+        OsFileLauncher.OpenWithOsDialog(fallbackPath);
+    }
+
+    /// <summary>
+    /// Opens <paramref name="remotePath"/> with the explicitly chosen <paramref name="entry"/>.
+    /// </summary>
+    public async Task OpenWithEntryAsync(string remotePath, ApplicationEntry entry)
+    {
+        var fileName = Path.GetFileName(remotePath);
+
+        if (entry.Kind == ApplicationKind.TermThingEditor)
+        {
+            if (_editors != null)
+                await OpenInBuiltInEditorAsync(remotePath, fileName);
+            return;
+        }
+
+        var localPath = await DownloadToTempAsync(remotePath, fileName);
+        OsFileLauncher.LaunchWith(entry.AppPath, entry.Args, localPath);
     }
 
     // -----------------------------------------------------------------------
@@ -104,34 +127,6 @@ public sealed class SftpFileOpener
             using var stream = new MemoryStream(bytes);
             sftp.UploadFile(stream, remotePath, canOverride: true);
         }, ct);
-    }
-
-    // -----------------------------------------------------------------------
-    // OpenWithDialog fallback
-    // -----------------------------------------------------------------------
-
-    private async Task ShowOpenWithDialogAsync(string remotePath, string fileName, string extension)
-    {
-        var dialog = new OpenWithDialog(fileName);
-        await dialog.ShowDialog(_hostWindow);
-
-        switch (dialog.Result)
-        {
-            case OpenWithResult.SetNew:
-                var settings = new SettingsWindow();
-                settings.OpenToFileAssociation(extension);
-                await settings.ShowDialog(_hostWindow);
-                if (settings.Committed)
-                    await OpenAsync(remotePath);
-                break;
-
-            case OpenWithResult.UseOs:
-                var tempPath = await DownloadToTempAsync(remotePath, fileName);
-                OsFileLauncher.OpenWithOsDialog(tempPath);
-                break;
-
-            // OpenWithResult.None: user cancelled — do nothing
-        }
     }
 
     // -----------------------------------------------------------------------

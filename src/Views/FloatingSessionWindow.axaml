@@ -4,6 +4,7 @@
         Title="Session"
         RequestedThemeVariant="Dark"
         Width="900" Height="600"
+        MinWidth="480" MinHeight="320"
         WindowStartupLocation="CenterScreen">
 
     <DockPanel>

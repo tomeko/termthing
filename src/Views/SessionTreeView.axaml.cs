@@ -175,12 +175,34 @@ public partial class SessionTreeView : UserControl
         TreeChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void OnNewSubgroupClicked(object? sender, RoutedEventArgs e)
+    private async void OnNewSubgroupClicked(object? sender, RoutedEventArgs e)
     {
         var parent = SelectedGroup() ?? RootGroup!;
-        parent.Subgroups.Add(new SessionGroup { Name = "New Group" });
+        var dialog = new RenameDialog("New Group") { Title = "New Subgroup" };
+        var name = await dialog.ShowDialog<string?>(TopLevel.GetTopLevel(this) as Window);
+        if (name is null) return;
+        var newGroup = new SessionGroup { Name = name };
+        parent.Subgroups.Add(newGroup);
         RebuildTree();
+        // Select the new node so right-click → Rename works immediately
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            var node = FindNode(_tree.ItemsSource?.Cast<SessionTreeNode>(), newGroup);
+            if (node is not null) _tree.SelectedItem = node;
+        });
         TreeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static SessionTreeNode? FindNode(IEnumerable<SessionTreeNode>? nodes, object tag)
+    {
+        if (nodes is null) return null;
+        foreach (var node in nodes)
+        {
+            if (node.Tag == tag) return node;
+            var found = FindNode(node.Children, tag);
+            if (found is not null) return found;
+        }
+        return null;
     }
 
     private async void OnRenameClicked(object? sender, RoutedEventArgs e)
@@ -284,6 +306,8 @@ public partial class SessionTreeView : UserControl
     {
         if (_tree.SelectedItem is SessionTreeNode { Tag: SessionDefinition def })
             SessionEditRequested?.Invoke(this, def);
+        else if (_tree.SelectedItem is SessionTreeNode { Tag: SessionGroup })
+            OnRenameClicked(sender, e!);
     }
 
     private void RebuildTree()

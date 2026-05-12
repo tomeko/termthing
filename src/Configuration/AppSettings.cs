@@ -15,10 +15,16 @@ public sealed class AppSettings
     public int RecentSessionsCount { get; set; } = 10;
 
     /// <summary>
-    /// File-extension-to-application associations used by the SFTP file opener.
-    /// Keyed by lower-case extension (including the dot), e.g. ".txt".
+    /// Legacy file-extension-to-application associations. Kept only for one-shot
+    /// migration into <see cref="Applications"/>; not used directly after migration.
     /// </summary>
     public List<FileAssociation> FileAssociations { get; set; } = [];
+
+    /// <summary>
+    /// Application entries used by the SFTP browser's Open With feature.
+    /// Supersedes <see cref="FileAssociations"/>.
+    /// </summary>
+    public List<ApplicationEntry> Applications { get; set; } = [];
 
     /// <summary>
     /// Whether to show a confirmation dialog when closing the main window
@@ -27,5 +33,28 @@ public sealed class AppSettings
     /// </summary>
     public bool ConfirmExitWithOpenSessions { get; set; } = true;
 
-    // Future: terminal prefs (font family, colour theme, etc.) will live here.
+    /// <summary>
+    /// One-shot migration: converts old <see cref="FileAssociations"/> entries into
+    /// <see cref="Applications"/> entries and clears the source list.
+    /// </summary>
+    public void MigrateFromFileAssociations()
+    {
+        if (Applications.Count > 0 || FileAssociations.Count == 0) return;
+        foreach (var fa in FileAssociations)
+        {
+            var name = string.IsNullOrWhiteSpace(fa.AppPath)
+                ? fa.Extension
+                : Path.GetFileNameWithoutExtension(fa.AppPath);
+            Applications.Add(new ApplicationEntry
+            {
+                Name       = string.IsNullOrWhiteSpace(name) ? fa.Extension : name,
+                Kind       = ApplicationKind.External,
+                AppPath    = fa.AppPath,
+                Args       = fa.Args,
+                Extensions = [fa.Extension.ToLowerInvariant()],
+                IsDefault  = true,
+            });
+        }
+        FileAssociations.Clear();
+    }
 }

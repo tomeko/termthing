@@ -3,42 +3,68 @@ using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using TermThing.Configuration;
 
 namespace TermThing.Views;
 
-/// <summary>
-/// Editable proxy for <see cref="FileAssociation"/> so the DataGrid can mutate
-/// the rows in place before the user commits.
-/// </summary>
-public sealed class FileAssociationRow
+/// <summary>Editable proxy for <see cref="ApplicationEntry"/> used by the Applications DataGrid.</summary>
+public sealed class ApplicationEntryRow : INotifyPropertyChanged
 {
-    public string Extension { get; set; } = string.Empty;
-    public string AppPath   { get; set; } = string.Empty;
-    public string Args      { get; set; } = string.Empty;
+    private bool _isDefault;
 
-    public FileAssociation ToAssociation() => new()
+    public Guid   Id           { get; init; } = Guid.NewGuid();
+    public string Name         { get; set; } = string.Empty;
+    public string AppPath      { get; set; } = string.Empty;
+    public string Args         { get; set; } = string.Empty;
+    public string ExtensionsRaw { get; set; } = string.Empty;
+
+    public bool IsDefault
     {
-        Extension = Extension.ToLowerInvariant().Trim(),
-        AppPath   = AppPath.Trim(),
-        Args      = Args.Trim(),
+        get => _isDefault;
+        set { _isDefault = value; OnPropertyChanged(); }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    public ApplicationEntry ToEntry() => new()
+    {
+        Id         = Id,
+        Name       = Name.Trim(),
+        Kind       = ApplicationKind.External,
+        AppPath    = AppPath.Trim(),
+        Args       = Args.Trim(),
+        Extensions = ExtensionsRaw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(e => e.StartsWith('.') ? e.ToLowerInvariant() : "." + e.ToLowerInvariant())
+            .Distinct()
+            .ToList(),
+        IsDefault  = IsDefault,
     };
 
-    public static FileAssociationRow FromAssociation(FileAssociation a) => new()
+    public static ApplicationEntryRow FromEntry(ApplicationEntry a) => new()
     {
-        Extension = a.Extension,
-        AppPath   = a.AppPath,
-        Args      = a.Args,
+        Id           = a.Id,
+        Name         = a.Name,
+        AppPath      = a.AppPath,
+        Args         = a.Args,
+        ExtensionsRaw = string.Join(", ", a.Extensions),
+        IsDefault    = a.IsDefault,
     };
 }
 
 public partial class SettingsWindow : Window
 {
-    private readonly ObservableCollection<FileAssociationRow> _rows = [];
+    private readonly ObservableCollection<ApplicationEntryRow> _appRows = [];
 
     private NumericUpDown _recentCount = null!;
-    private DataGrid _assocGrid = null!;
+    private DataGrid _appsGrid = null!;
     private CheckBox _confirmExit = null!;
+    private TextBox  _builtInExtBox = null!;
+    private CheckBox _builtInDefaultCheck = null!;
 
     // True when the user pressed OK
     public bool Committed { get; private set; }
@@ -47,36 +73,40 @@ public partial class SettingsWindow : Window
     {
         InitializeComponent();
 
-        _recentCount = this.FindControl<NumericUpDown>("RecentCountSpinner")!;
-        _assocGrid   = this.FindControl<DataGrid>("AssocGrid")!;
-        _confirmExit = this.FindControl<CheckBox>("ConfirmExitCheckBox")!;
+        _recentCount        = this.FindControl<NumericUpDown>("RecentCountSpinner")!;
+        _appsGrid           = this.FindControl<DataGrid>("AppsGrid")!;
+        _confirmExit        = this.FindControl<CheckBox>("ConfirmExitCheckBox")!;
+        _builtInExtBox      = this.FindControl<TextBox>("BuiltInExtBox")!;
+        _builtInDefaultCheck = this.FindControl<CheckBox>("BuiltInDefaultCheck")!;
 
-        // Populate from current settings
         _recentCount.Value = SettingsService.App.RecentSessionsCount;
         _confirmExit.IsChecked = SettingsService.App.ConfirmExitWithOpenSessions;
 
-        foreach (var a in SettingsService.App.FileAssociations)
-            _rows.Add(FileAssociationRow.FromAssociation(a));
+        // Populate built-in editor controls
+        var builtIn = SettingsService.App.Applications
+            .FirstOrDefault(a => a.Kind == ApplicationKind.TermThingEditor);
+        _builtInExtBox.Text = builtIn != null ? string.Join(", ", builtIn.Extensions) : string.Empty;
+        _builtInDefaultCheck.IsChecked = builtIn?.IsDefault ?? false;
 
-        _assocGrid.ItemsSource = _rows;
+        // Populate external apps
+        foreach (var a in SettingsService.App.Applications.Where(a => a.Kind != ApplicationKind.TermThingEditor))
+            _appRows.Add(ApplicationEntryRow.FromEntry(a));
+
+        _appsGrid.ItemsSource = _appRows;
     }
 
-    /// <summary>
-    /// Call from MainWindow to pre-open on the File Associations tab and optionally
-    /// pre-fill a new row for a specific extension.
-    /// </summary>
-    public void OpenToFileAssociation(string? extension = null)
+    /// <summary>Switches to the Applications tab. Called by the SFTP view's "Manage applications…" link.</summary>
+    public void OpenToApplications(string? extension = null)
     {
-        // Switch to the File Associations tab (index 1) by finding the TabControl in the tree
         var tc = this.FindDescendantOfType<TabControl>();
         if (tc != null) tc.SelectedIndex = 1;
 
         if (!string.IsNullOrWhiteSpace(extension))
         {
-            var row = new FileAssociationRow { Extension = extension };
-            _rows.Add(row);
-            _assocGrid.SelectedItem = row;
-            _assocGrid.ScrollIntoView(row, null);
+            var row = new ApplicationEntryRow { ExtensionsRaw = extension };
+            _appRows.Add(row);
+            _appsGrid.SelectedItem = row;
+            _appsGrid.ScrollIntoView(row, null);
         }
     }
 
@@ -86,17 +116,35 @@ public partial class SettingsWindow : Window
 
     private void OnOkClicked(object? sender, RoutedEventArgs e)
     {
-        // Commit edits — end any in-progress cell edit first
-        _assocGrid.CommitEdit(DataGridEditingUnit.Row, exitEditingMode: true);
+        _appsGrid.CommitEdit(DataGridEditingUnit.Row, exitEditingMode: true);
 
         SettingsService.App.RecentSessionsCount = (int)(_recentCount.Value ?? 10);
         SettingsService.App.ConfirmExitWithOpenSessions = _confirmExit.IsChecked == true;
-        SettingsService.App.FileAssociations =
-            _rows.Where(r => !string.IsNullOrWhiteSpace(r.Extension) &&
-                             !string.IsNullOrWhiteSpace(r.AppPath))
-                 .Select(r => r.ToAssociation())
-                 .ToList();
 
+        var newApps = new List<ApplicationEntry>();
+
+        // Save built-in editor entry
+        var builtInExts = (_builtInExtBox.Text ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(e => e.StartsWith('.') ? e.ToLowerInvariant() : "." + e.ToLowerInvariant())
+            .Distinct()
+            .ToList();
+        newApps.Add(new ApplicationEntry
+        {
+            Id         = ApplicationEntry.BuiltInEditorId,
+            Name       = "TermThing Editor",
+            Kind       = ApplicationKind.TermThingEditor,
+            Extensions = builtInExts,
+            IsDefault  = _builtInDefaultCheck.IsChecked == true,
+        });
+
+        // Save external apps (skip blank rows)
+        newApps.AddRange(
+            _appRows
+                .Where(r => !string.IsNullOrWhiteSpace(r.Name) && !string.IsNullOrWhiteSpace(r.AppPath))
+                .Select(r => r.ToEntry()));
+
+        SettingsService.App.Applications = newApps;
         SettingsService.SaveApp();
         Committed = true;
         Close();
@@ -104,24 +152,24 @@ public partial class SettingsWindow : Window
 
     private void OnCancelClicked(object? sender, RoutedEventArgs e) => Close();
 
-    private void OnAddAssocClicked(object? sender, RoutedEventArgs e)
+    private void OnAddAppClicked(object? sender, RoutedEventArgs e)
     {
-        var row = new FileAssociationRow { Extension = ".ext" };
-        _rows.Add(row);
-        _assocGrid.SelectedItem = row;
-        _assocGrid.ScrollIntoView(row, null);
-        _assocGrid.BeginEdit();
+        var row = new ApplicationEntryRow { Name = "New App", AppPath = string.Empty };
+        _appRows.Add(row);
+        _appsGrid.SelectedItem = row;
+        _appsGrid.ScrollIntoView(row, null);
+        _appsGrid.BeginEdit();
     }
 
-    private void OnRemoveAssocClicked(object? sender, RoutedEventArgs e)
+    private void OnRemoveAppClicked(object? sender, RoutedEventArgs e)
     {
-        if (_assocGrid.SelectedItem is FileAssociationRow row)
-            _rows.Remove(row);
+        if (_appsGrid.SelectedItem is ApplicationEntryRow row)
+            _appRows.Remove(row);
     }
 
     private async void OnBrowseAppClicked(object? sender, RoutedEventArgs e)
     {
-        if (sender is not Button btn || btn.Tag is not FileAssociationRow row)
+        if (sender is not Button btn || btn.Tag is not ApplicationEntryRow row)
             return;
 
         var top = TopLevel.GetTopLevel(this);
@@ -137,8 +185,11 @@ public partial class SettingsWindow : Window
         if (picked == null) return;
 
         row.AppPath = picked.TryGetLocalPath() ?? picked.Path.LocalPath;
-        // Refresh the DataGrid row
-        _assocGrid.ItemsSource = null;
-        _assocGrid.ItemsSource = _rows;
+        if (string.IsNullOrWhiteSpace(row.Name) || row.Name == "New App")
+            row.Name = Path.GetFileNameWithoutExtension(row.AppPath);
+
+        // Refresh the DataGrid
+        _appsGrid.ItemsSource = null;
+        _appsGrid.ItemsSource = _appRows;
     }
 }

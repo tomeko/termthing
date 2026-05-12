@@ -13,6 +13,7 @@ public static class SettingsService
     {
         App  = SettingsStore.LoadOrDefault<AppSettings>(AppPaths.AppSettingsFile);
         Temp = SettingsStore.LoadOrDefault<TempSettings>(AppPaths.TempSettingsFile);
+        App.MigrateFromFileAssociations();
     }
 
     public static void SaveTemp() =>

@@ -50,28 +50,53 @@
             </TabItem>
 
             <!-- ============================================================
-                 File Associations
+                 Applications
                  ============================================================ -->
-            <TabItem Header="File Associations">
+            <TabItem Header="Applications">
                 <DockPanel Margin="8">
-                    <!-- Instruction text -->
                     <TextBlock DockPanel.Dock="Top"
-                               Text="Map file extensions to external apps used by the SFTP browser. Use {file} in Args as a placeholder for the file path."
+                               Text="Configure applications for the SFTP browser’s Open With menu. Extensions are comma-separated, e.g. .log, .txt (leave blank to match any). Use {file} in Args as a placeholder for the file path."
                                TextWrapping="Wrap"
                                FontSize="11"
                                Foreground="Gray"
                                Margin="0,0,0,8"/>
 
-                    <!-- Add / Remove buttons -->
+                    <!-- Built-in editor section -->
+                    <Border DockPanel.Dock="Top"
+                            BorderBrush="#444"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Padding="10,8"
+                            Margin="0,0,0,10">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel Grid.Column="0" Spacing="6">
+                                <TextBlock Text="TermThing Editor" FontWeight="SemiBold"/>
+                                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                    <TextBlock Text="Default for extensions:" VerticalAlignment="Center" FontSize="11"/>
+                                    <TextBox x:Name="BuiltInExtBox"
+                                             Width="220"
+                                             FontSize="11"
+                                             Watermark=".txt, .log  (blank = match any)"/>
+                                </StackPanel>
+                            </StackPanel>
+                            <CheckBox x:Name="BuiltInDefaultCheck"
+                                      Grid.Column="1"
+                                      Content="Default"
+                                      VerticalAlignment="Center"
+                                      Margin="16,0,0,0"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Add / Remove buttons for external apps -->
                     <StackPanel DockPanel.Dock="Bottom"
                                 Orientation="Horizontal"
                                 Spacing="6"
                                 Margin="0,8,0,0">
-                        <Button x:Name="AddAssocButton"    Content="＋ Add"    Click="OnAddAssocClicked"/>
-                        <Button x:Name="RemoveAssocButton" Content="− Remove"  Click="OnRemoveAssocClicked"/>
+                        <Button x:Name="AddAppButton"    Content="＋ Add"    Click="OnAddAppClicked"/>
+                        <Button x:Name="RemoveAppButton" Content="− Remove"  Click="OnRemoveAppClicked"/>
                     </StackPanel>
 
-                    <DataGrid x:Name="AssocGrid"
+                    <DataGrid x:Name="AppsGrid"
                               AutoGenerateColumns="False"
                               CanUserSortColumns="False"
                               CanUserResizeColumns="True"
@@ -79,15 +104,11 @@
                               HeadersVisibility="Column"
                               FontSize="12">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Extension"
-                                                Binding="{Binding Extension}"
-                                                Width="90"/>
-                            <DataGridTextColumn Header="App Path"
-                                                Binding="{Binding AppPath}"
-                                                Width="*"/>
-                            <DataGridTextColumn Header="Args"
-                                                Binding="{Binding Args}"
-                                                Width="140"/>
+                            <DataGridTextColumn Header="Name"       Binding="{Binding Name}"         Width="120"/>
+                            <DataGridTextColumn Header="App Path"   Binding="{Binding AppPath}"       Width="*"/>
+                            <DataGridTextColumn Header="Args"       Binding="{Binding Args}"          Width="90"/>
+                            <DataGridTextColumn Header="Extensions" Binding="{Binding ExtensionsRaw}" Width="130"/>
+                            <DataGridCheckBoxColumn Header="Default" Binding="{Binding IsDefault}"    Width="60"/>
                             <DataGridTemplateColumn Header="" Width="34" CanUserResize="False">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>

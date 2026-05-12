@@ -4,6 +4,7 @@
         Title="Manage Known Hosts"
         Width="680"
         Height="400"
+        MinWidth="480" MinHeight="320"
         WindowStartupLocation="CenterOwner">
     <DockPanel Margin="12">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"

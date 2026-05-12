@@ -113,19 +113,26 @@ public partial class SftpFileBrowserView : UserControl
 
     private TextBox _pathBox = null!;
     private Button _refreshButton = null!;
+    private Button _syncToTerminalButton = null!;
     private DataGrid _filesGrid = null!;
     private CheckBox _followLocationCheckBox = null!;
     private CheckBox _sysmonCheckBox = null!;
     private CheckBox _dockerMonCheckBox = null!;
     private TextBlock _statusText = null!;
     private MenuItem _menuOpen = null!;
+    private MenuItem _menuOpenWith = null!;
     private MenuItem _menuTail = null!;
     private MenuItem _menuDownloadTo = null!;
     private MenuItem _menuDelete = null!;
     private MenuItem _menuProperties = null!;
     private MenuItem _menuBookmarkFolder = null!;
+    private MenuItem _menuNewDirectory = null!;
+    private MenuItem _menuNewFile = null!;
+    private Separator _blankAreaSeparator = null!;
     private TransferProgressOverlay _transferOverlay = null!;
     private Border _dropOverlay = null!;
+
+    private bool _contextMenuOnBlankArea;
 
     // Bookmark panel controls
     private Grid _mainContentGrid = null!;
@@ -191,17 +198,22 @@ public partial class SftpFileBrowserView : UserControl
 
         _pathBox               = this.FindControl<TextBox>("PathBox")!;
         _refreshButton         = this.FindControl<Button>("RefreshButton")!;
+        _syncToTerminalButton  = this.FindControl<Button>("SyncToTerminalButton")!;
         _filesGrid             = this.FindControl<DataGrid>("FilesGrid")!;
         _followLocationCheckBox = this.FindControl<CheckBox>("FollowLocationCheckBox")!;
         _sysmonCheckBox        = this.FindControl<CheckBox>("SysmonCheckBox")!;
         _dockerMonCheckBox     = this.FindControl<CheckBox>("DockerMonCheckBox")!;
         _statusText            = this.FindControl<TextBlock>("StatusText")!;
-        _menuOpen       = this.FindControl<MenuItem>("MenuOpen")!;
-        _menuTail       = this.FindControl<MenuItem>("MenuTail")!;
-        _menuDownloadTo = this.FindControl<MenuItem>("MenuDownloadTo")!;
-        _menuDelete     = this.FindControl<MenuItem>("MenuDelete")!;
-        _menuProperties = this.FindControl<MenuItem>("MenuProperties")!;
-        _menuBookmarkFolder = this.FindControl<MenuItem>("MenuBookmarkFolder")!;
+        _menuOpen         = this.FindControl<MenuItem>("MenuOpen")!;
+        _menuOpenWith     = this.FindControl<MenuItem>("MenuOpenWith")!;
+        _menuTail         = this.FindControl<MenuItem>("MenuTail")!;
+        _menuDownloadTo   = this.FindControl<MenuItem>("MenuDownloadTo")!;
+        _menuDelete       = this.FindControl<MenuItem>("MenuDelete")!;
+        _menuProperties   = this.FindControl<MenuItem>("MenuProperties")!;
+        _menuBookmarkFolder  = this.FindControl<MenuItem>("MenuBookmarkFolder")!;
+        _menuNewDirectory = this.FindControl<MenuItem>("MenuNewDirectory")!;
+        _menuNewFile      = this.FindControl<MenuItem>("MenuNewFile")!;
+        _blankAreaSeparator = this.FindControl<Separator>("BlankAreaSeparator")!;
         _transferOverlay       = this.FindControl<TransferProgressOverlay>("TransferOverlay")!;
         _dropOverlay           = this.FindControl<Border>("DropOverlay")!;
 
@@ -258,6 +270,7 @@ public partial class SftpFileBrowserView : UserControl
     internal void SetShellCommand(Action<string> sendCommand)
     {
         _sendShellCommand = sendCommand;
+        Dispatcher.UIThread.Post(UpdateSyncButtonVisibility);
     }
 
     public void NavigateTo(string path)
@@ -299,6 +312,7 @@ public partial class SftpFileBrowserView : UserControl
                     Entries.Add(entry);
                 _currentPath     = path;
                 _pathBox.Text    = _currentPath;
+                UpdateSyncButtonVisibility();
             });
         }
         catch (Exception ex)
@@ -367,9 +381,26 @@ public partial class SftpFileBrowserView : UserControl
         }
 
         _lastTerminalDir = path;
+        UpdateSyncButtonVisibility();
 
         if (!FollowLocation || string.IsNullOrWhiteSpace(path)) return;
         NavigateTo(path);
+    }
+
+    private void UpdateSyncButtonVisibility()
+    {
+        if (_syncToTerminalButton == null) return;
+        _syncToTerminalButton.IsVisible =
+            _sendShellCommand != null &&
+            !string.IsNullOrEmpty(_lastTerminalDir) &&
+            !string.Equals(_currentPath, _lastTerminalDir, StringComparison.Ordinal);
+    }
+
+    private void OnSyncToTerminalClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_sendShellCommand == null) return;
+        var escaped = _currentPath.Replace("'", "'\\''" );
+        _sendShellCommand($"cd '{escaped}'\n");
     }
 
     private void OnFollowLocationChecked(object? sender, RoutedEventArgs e)
@@ -634,6 +665,73 @@ public partial class SftpFileBrowserView : UserControl
     {
         if (_filesGrid.SelectedItem is SftpEntry { IsDirectory: false } entry)
             await OpenEntryAsync(entry);
+    }
+
+    private async void OnMenuNewDirectoryClicked(object? sender, RoutedEventArgs e)
+    {
+        var host = TopLevel.GetTopLevel(this) as Window;
+        var dialog = new RenameDialog("") { Title = "New Directory" };
+        var name = await dialog.ShowDialog<string?>(host);
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var remotePath = _currentPath.TrimEnd('/') + "/" + name;
+        try
+        {
+            await Task.Run(() => _sftpClient.CreateDirectory(remotePath));
+            Refresh();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Create directory failed: {ex.Message}");
+        }
+    }
+
+    private async void OnMenuNewFileClicked(object? sender, RoutedEventArgs e)
+    {
+        var host = TopLevel.GetTopLevel(this) as Window;
+        var dialog = new RenameDialog("") { Title = "New File" };
+        var name = await dialog.ShowDialog<string?>(host);
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var remotePath = _currentPath.TrimEnd('/') + "/" + name;
+        try
+        {
+            await Task.Run(() =>
+            {
+                using var stream = new System.IO.MemoryStream();
+                _sftpClient.UploadFile(stream, remotePath);
+            });
+            Refresh();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Create file failed: {ex.Message}");
+        }
+    }
+
+    private async Task OpenEntryWithAsync(SftpEntry entry, ApplicationEntry app)
+    {
+        var host = TopLevel.GetTopLevel(this) as Window;
+        if (host == null) return;
+        var displayHost = _sshClient is not null
+            ? $"{_sshClient.ConnectionInfo.Username}@{_sshClient.ConnectionInfo.Host}"
+            : _sftpClient.ConnectionInfo.Host;
+        var opener = new SftpFileOpener(_sftpClient, SessionEditorId, displayHost, host, _editorRegistry);
+        try
+        {
+            await opener.OpenWithEntryAsync(entry.FullPath, app);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Open failed: {ex.Message}");
+        }
+    }
+
+    private void OpenApplicationsSettings()
+    {
+        var host = TopLevel.GetTopLevel(this) as Window;
+        if (host == null) return;
+        var settings = new SettingsWindow();
+        settings.OpenToApplications();
+        _ = settings.ShowDialog(host);
     }
 
     private async void OnMenuDeleteClicked(object? sender, RoutedEventArgs e)
@@ -1134,6 +1232,22 @@ public partial class SftpFileBrowserView : UserControl
 
     private void OnFilesGridPointerPressed(object? sender, PointerPressedEventArgs e)
     {
+        // Track right-click position for blank-area context menu detection
+        var pt = e.GetCurrentPoint(_filesGrid);
+        if (pt.Properties.IsRightButtonPressed)
+        {
+            var pos = e.GetPosition(_filesGrid);
+            _contextMenuOnBlankArea = !_filesGrid.GetVisualDescendants()
+                .OfType<DataGridRow>()
+                .Any(r =>
+                {
+                    var origin = r.TranslatePoint(new Point(0, 0), _filesGrid);
+                    return origin != null &&
+                           new Rect(origin.Value, new Size(_filesGrid.Bounds.Width, r.Bounds.Height)).Contains(pos);
+                });
+            return;
+        }
+
         if (_dragOutInProgress) return;
 
         _dragOutPending     = null;
@@ -1142,12 +1256,12 @@ public partial class SftpFileBrowserView : UserControl
         var point = e.GetCurrentPoint(_filesGrid);
         if (!point.Properties.IsLeftButtonPressed) return;
 
-        var pos   = e.GetPosition(_filesGrid);
-        var entry = GetEntryUnderPointer(pos);
+        var dragPos = e.GetPosition(_filesGrid);
+        var entry   = GetEntryUnderPointer(dragPos);
         if (entry == null) return;
 
         _dragOutPending     = entry;
-        _dragOutStartPos    = pos;
+        _dragOutStartPos    = dragPos;
         _dragOutPointerArgs = e;
     }
 

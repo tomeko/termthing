@@ -31,13 +31,23 @@
                     VerticalAlignment="Center"/>
         </Grid>
 
-        <CheckBox x:Name="FollowLocationCheckBox"
-                  DockPanel.Dock="Bottom"
-                  Content="Follow location"
-                  IsChecked="True"
-                  FontSize="11"
-                  Margin="6,2,4,4"
-                  IsCheckedChanged="OnFollowLocationChecked"/>
+        <StackPanel DockPanel.Dock="Bottom"
+                    Orientation="Horizontal"
+                    Margin="6,2,4,4"
+                    Spacing="4">
+            <CheckBox x:Name="FollowLocationCheckBox"
+                      Content="Follow location"
+                      IsChecked="True"
+                      FontSize="11"
+                      IsCheckedChanged="OnFollowLocationChecked"/>
+            <Button x:Name="SyncToTerminalButton"
+                    Content="⤴"
+                    FontSize="13"
+                    Padding="4,1"
+                    ToolTip.Tip="cd into this folder in the terminal"
+                    IsVisible="False"
+                    Click="OnSyncToTerminalClicked"/>
+        </StackPanel>
 
         <StackPanel x:Name="MonitorChecksRow"
                     DockPanel.Dock="Bottom"
@@ -84,6 +94,7 @@
             <DataGrid.ContextMenu>
                 <ContextMenu Opening="OnContextMenuOpening">
                     <MenuItem x:Name="MenuOpen"       Header="Open"          Click="OnMenuOpenClicked"/>
+                    <MenuItem x:Name="MenuOpenWith"   Header="Open With"/>
                     <MenuItem x:Name="MenuTail"       Header="Tail (live)"   Click="OnMenuTailClicked"/>
                     <MenuItem x:Name="MenuDownloadTo" Header="Download to "/>
                     <MenuItem x:Name="MenuDelete"     Header="Delete"        Click="OnMenuDeleteClicked"/>
@@ -92,6 +103,9 @@
                     <MenuItem x:Name="MenuBookmarkFolder" Header="Bookmark this folder" Click="OnMenuBookmarkFolderClicked"/>
                     <Separator/>
                     <MenuItem Header="Refresh" Click="OnRefreshClicked"/>
+                    <Separator x:Name="BlankAreaSeparator"/>
+                    <MenuItem x:Name="MenuNewDirectory" Header="New Directory…" Click="OnMenuNewDirectoryClicked"/>
+                    <MenuItem x:Name="MenuNewFile"      Header="New File…"      Click="OnMenuNewFileClicked"/>
                 </ContextMenu>
             </DataGrid.ContextMenu>
             <DataGrid.Columns>

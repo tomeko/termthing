@@ -4,7 +4,7 @@
         x:Class="TermThing.Views.LogTailWindow"
         Title="Tail"
         Width="900" Height="560"
-        MinWidth="420" MinHeight="240"
+        MinWidth="480" MinHeight="320"
         WindowStartupLocation="CenterScreen">
 
     <DockPanel>
