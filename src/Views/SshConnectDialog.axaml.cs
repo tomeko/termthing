@@ -31,10 +31,10 @@ public partial class SshConnectDialog : Window
     private readonly AppConfig?   _appConfig;
 
     // Session-name auto-fill state (connect mode only):
-    // we keep mirroring "{user}@{host}" into SessionNameTextBox until the
-    // user manually edits the name field, then we leave it alone.
-    private bool _sessionNameTouched;
-    private bool _suppressSessionNameUpdate;
+    // We track the last value we wrote ourselves; if the box holds a different
+    // value the user must have typed something, so we stop auto-filling.
+    private bool   _sessionNameTouched;
+    private string _autoSessionName = string.Empty;
 
     // Jump-host list (edit mode only)
     private readonly ObservableCollection<JumpHostListItem> _jumpItems = [];
@@ -61,7 +61,9 @@ public partial class SshConnectDialog : Window
 
         // Edit mode: hide secret fields, show Name field, no "Save as session" row
         SecretFieldsPanel.IsVisible  = !editMode;
-        SaveAsSessionRow.IsVisible   = !editMode;
+        SaveAsSessionRow.IsVisible   = false;   // placeholder row — always hidden
+        SessionNameRow.IsVisible     = !editMode;
+        SaveSessionToggle.IsVisible  = !editMode;
         NameRow.IsVisible            = editMode;
         JumpHostsSection.IsVisible   = true;
 
@@ -106,14 +108,14 @@ public partial class SshConnectDialog : Window
             ? string.Empty
             : $"{user}@{host}";
 
-        _suppressSessionNameUpdate = true;
-        try { SessionNameTextBox.Text = auto; }
-        finally { _suppressSessionNameUpdate = false; }
+        _autoSessionName = auto;
+        SessionNameTextBox.Text = auto;
     }
 
     private void OnSessionNameChanged(object? sender, Avalonia.Controls.TextChangedEventArgs e)
     {
-        if (_suppressSessionNameUpdate) return;
+        // If the box still holds what we last wrote, this event is our own update — ignore it.
+        if (SessionNameTextBox.Text == _autoSessionName) return;
         _sessionNameTouched = true;
     }
 
@@ -167,7 +169,7 @@ public partial class SshConnectDialog : Window
         else
         {
             Password     = PasswordTextBox.Text;
-            SaveAsSession = SaveAsSessionCheckBox.IsChecked != true;
+            SaveAsSession = SaveSessionToggle.IsChecked == true;
             SessionName   = SessionNameTextBox.Text?.Trim();
             if (SaveAsSession && string.IsNullOrWhiteSpace(SessionName))
                 SessionName = $"{username}@{host}";

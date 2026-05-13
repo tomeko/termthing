@@ -202,7 +202,7 @@ internal static class SshChainConnector
         if (pendingArgs is not null)
         {
             // Unknown or mismatched host key — prompt the user.
-            var (action, args) = await PromptHostKeyAsync(logicalHost, logicalPort,
+            var action = await promptHost.PromptHostKeyAsync(logicalHost, logicalPort,
                 pendingStatus!.Value, pendingArgs);
 
             if (action == HostKeyAction.Cancel)
@@ -212,7 +212,7 @@ internal static class SshChainConnector
             }
 
             if (action == HostKeyAction.TrustAndConnect)
-                knownHosts.Trust(logicalHost, logicalPort, args);
+                knownHosts.Trust(logicalHost, logicalPort, pendingArgs);
 
             // Reconnect now trusting the key.
             client.Dispose();
@@ -284,20 +284,6 @@ internal static class SshChainConnector
         }
     }
 
-    private static async Task<(HostKeyAction, HostKeyEventArgs)> PromptHostKeyAsync(
-        string host, int port, KnownHostStatus status, HostKeyEventArgs args)
-    {
-        var dialog = new Views.HostKeyPromptDialog(host, port, status, args);
-        var action = await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
-        {
-            var owner = Avalonia.Application.Current?.ApplicationLifetime is
-                Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop
-                ? desktop.MainWindow
-                : null;
-            return dialog.ShowDialog<HostKeyAction?>(owner!);
-        });
-        return (action ?? HostKeyAction.Cancel, args);
-    }
 }
 
 // ---------------------------------------------------------------------------

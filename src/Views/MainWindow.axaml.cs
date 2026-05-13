@@ -8,7 +8,9 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Iciclecreek.Terminal;
+using Renci.SshNet.Common;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using TermThing.Configuration;
 using TermThing.Editor;
@@ -130,7 +132,7 @@ public partial class MainWindow : Window, ISessionPromptHost
     public async Task<bool> PromptForSshSecretsAsync(SessionDefinition definition)
     {
         var settings = (SshSettings)definition.Settings!;
-        var dialog = new SshConnectDialog(editMode: false, prefill: settings);
+        var dialog = new SshConnectDialog(editMode: false, prefill: settings, appConfig: _config);
         var result = await dialog.ShowDialog<bool?>(this);
         if (result != true) return false;
 
@@ -204,6 +206,14 @@ public partial class MainWindow : Window, ISessionPromptHost
         win.Opened += (_, _) => passBox.Focus();
 
         return await win.ShowDialog<string?>(this);
+    }
+
+    public async Task<HostKeyAction> PromptHostKeyAsync(
+        string host, int port, KnownHostStatus status, HostKeyEventArgs args)
+    {
+        var dialog = new HostKeyPromptDialog(host, port, status, args);
+        var action = await dialog.ShowDialog<HostKeyAction?>(this);
+        return action ?? HostKeyAction.Cancel;
     }
 
     // -----------------------------------------------------------------------
@@ -323,7 +333,7 @@ public partial class MainWindow : Window, ISessionPromptHost
 
     private async Task DoNewSshAsync()
     {
-        var dialog = new SshConnectDialog(editMode: false);
+        var dialog = new SshConnectDialog(editMode: false, appConfig: _config);
         var result = await dialog.ShowDialog<bool?>(this);
         if (result != true || string.IsNullOrWhiteSpace(dialog.Host)) return;
 
@@ -394,9 +404,19 @@ public partial class MainWindow : Window, ISessionPromptHost
         {
             var path = picked.TryGetLocalPath() ?? picked.Path.LocalPath;
             var imported = SessionImportExport.Import(path);
+            var badPaths = SessionImportExport.SanitizeKeyPaths(imported);
             _config.RootGroup.Subgroups.Add(imported);
             SessionTree.SetRoot(_config.RootGroup);
             SaveConfig();
+
+            if (badPaths.Count > 0)
+            {
+                var lines = string.Join("\n",
+                    badPaths.Select(p => $"  • {p.OwnerName}: {p.BadPath}"));
+                await ShowErrorAsync("Key paths cleared after import",
+                    $"The following private-key paths do not exist on this machine and have been cleared. " +
+                    $"Re-open each session's settings to choose a new key file.\n\n{lines}");
+            }
         }
         catch (Exception ex)
         {

@@ -1,3 +1,7 @@
+using Renci.SshNet.Common;
+using TermThing.Ssh;
+using TermThing.Views;
+
 namespace TermThing.Sessions;
 
 /// <summary>
@@ -21,4 +25,12 @@ public interface ISessionPromptHost
     /// Returns the passphrase string, or <c>null</c> if the user cancelled.
     /// </summary>
     Task<string?> PromptForPassphraseAsync(string keyFilePath, string? hostname = null);
+
+    /// <summary>
+    /// Shows the host-key trust dialog and returns the user's action.
+    /// Routing this through <c>MainWindow</c> (rather than resolving the window via
+    /// <c>Application.Current</c>) ensures correct modal ownership so that no
+    /// spurious empty window appears behind the dialog.
+    /// </summary>
+    Task<HostKeyAction> PromptHostKeyAsync(string host, int port, KnownHostStatus status, HostKeyEventArgs args);
 }

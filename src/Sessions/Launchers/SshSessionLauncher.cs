@@ -127,7 +127,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
 
             if (pendingKeyArgs is not null)
             {
-                var (action, args) = await PromptHostKeyAsync(settings.Host, settings.Port,
+                var action = await promptHost.PromptHostKeyAsync(settings.Host, settings.Port,
                     pendingStatus!.Value, pendingKeyArgs);
 
                 if (action == HostKeyAction.Cancel)
@@ -136,7 +136,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
                     throw new OperationCanceledException("SSH connection aborted by user.");
                 }
                 if (action == HostKeyAction.TrustAndConnect)
-                    _knownHosts.Trust(settings.Host, settings.Port, args);
+                    _knownHosts.Trust(settings.Host, settings.Port, pendingKeyArgs);
 
                 client.Dispose();
                 client = new SshClient(connectionInfo);
@@ -285,13 +285,17 @@ public sealed class SshSessionLauncher : ISessionLauncher
         instance.SetShellCommand(line => shell.WriteLine(line));
         var connection = new SshPtyConnection(client, shell);
         instance.OnPtyConnectionReady(connection);
-        await tc.AttachConnection(connection);
 
         if (sftpClient != null && settings.ShellIntegrationOsc7)
         {
-            await Task.Run(() => shell.WriteLine(
-                "PROMPT_COMMAND='printf \"\\033]7;file://${HOSTNAME}${PWD}\\007\"'"));
+            // Inject PROMPT_COMMAND via the terminal library's ShellIntegrationCommand
+            // property — the library sends it on first PTY data and strips the echoed
+            // line from output, so it remains invisible in the scrollback.
+            tc.ShellIntegrationCommand =
+                "PROMPT_COMMAND='printf \"\\033]7;file://${HOSTNAME}${PWD}\\007\"' # __ICTERMINT__";
         }
+
+        await tc.AttachConnection(connection);
     }
 
     /// <summary>
@@ -329,20 +333,6 @@ public sealed class SshSessionLauncher : ISessionLauncher
         return new SshAuthenticationException(detail);
     }
 
-    private static async Task<(HostKeyAction, HostKeyEventArgs)> PromptHostKeyAsync(
-        string host, int port, KnownHostStatus status, HostKeyEventArgs args)
-    {
-        var dialog = new HostKeyPromptDialog(host, port, status, args);
-        var action = await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
-        {
-            var owner = Avalonia.Application.Current?.ApplicationLifetime is
-                Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop
-                ? desktop.MainWindow
-                : null;
-            return dialog.ShowDialog<HostKeyAction?>(owner!);
-        });
-        return (action ?? HostKeyAction.Cancel, args);
-    }
 }
 
 internal sealed class SshSessionInstance : ISessionInstance
