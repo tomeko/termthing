@@ -2,17 +2,6 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="TermThing.Views.DockerMonPanel"
              Background="#1e1e1e">
-    <UserControl.Styles>
-        <Style Selector="DataGridCell">
-            <Setter Property="FocusAdorner" Value="{x:Null}"/>
-        </Style>
-        <Style Selector="DataGridCell:focus /template/ Grid#FocusVisual">
-            <Setter Property="IsVisible" Value="False"/>
-        </Style>
-        <Style Selector="DataGridCell:current /template/ Rectangle#CurrencyVisual">
-            <Setter Property="IsVisible" Value="False"/>
-        </Style>
-    </UserControl.Styles>
     <Border BorderBrush="#333" BorderThickness="0,1,0,0">
         <DockPanel>
 

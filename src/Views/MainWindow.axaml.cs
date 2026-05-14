@@ -39,6 +39,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         public required Panel Host { get; init; }
         public required TextBlock TitleBlock { get; init; }
         public required SessionDefinition Def { get; init; }
+        public required Border HeaderBorder { get; init; }
         public ISessionInstance? Instance { get; set; }
         public SessionEndedOverlay? Overlay { get; set; }
         public FloatingSessionWindow? FloatingWindow { get; set; }
@@ -48,6 +49,16 @@ public partial class MainWindow : Window, ISessionPromptHost
         /// </summary>
         public Guid? SftpEditorSessionId { get; init; }
     }
+
+    // Tab drag-and-drop state
+    private TabItem? _tabDragCandidate;
+    private Point    _tabDragStartPos;
+    private PointerPressedEventArgs? _tabDragPressArgs;
+    private static readonly SolidColorBrush TabDropBrush = new(Color.Parse("#2196F3"));
+    private static readonly DataFormat<string> TabDragFormat =
+        DataFormat.CreateStringApplicationFormat("termthing-tab");
+    private static TabItem? s_tabDragPayload;
+    private enum TabDropSide { None, Left, Right }
 
     // Provides access to the named grid for column-width persistence
     private Grid? _mainBodyGrid;
@@ -136,11 +147,66 @@ public partial class MainWindow : Window, ISessionPromptHost
         var result = await dialog.ShowDialog<bool?>(this);
         if (result != true) return false;
 
-        // Mutate the transient fields — not persisted
-        settings.TransientPassword = dialog.Password;
+        // Mutate the transient fields — not persisted.
+        // settings is already the same object referenced by definition.Settings, so
+        // no reassignment is needed (and using `with { }` would reset mutable fields).
         settings.TransientSecretsConfirmed = true;
-        definition.Settings = settings with { };
         return true;
+    }
+
+    public async Task<string?> PromptForPasswordAsync(string username, string host)
+    {
+        var passBox = new TextBox
+        {
+            PasswordChar = '●',
+            PlaceholderText = "Password",
+            MinWidth = 260,
+        };
+
+        var okBtn     = new Button { Content = "OK",     HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Margin = new Avalonia.Thickness(0,0,8,0) };
+        var cancelBtn = new Button { Content = "Cancel", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right };
+
+        var win = new Window
+        {
+            Title = $"SSH Password — {host}",
+            Width = 380,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            SizeToContent = SizeToContent.Height,
+            Content = new StackPanel
+            {
+                Margin  = new Avalonia.Thickness(20),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"Enter password for {username}@{host}:",
+                        TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                    },
+                    passBox,
+                    new StackPanel
+                    {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { okBtn, cancelBtn },
+                    },
+                },
+            },
+        };
+
+        okBtn.Click     += (_, _) => win.Close(passBox.Text ?? string.Empty);
+        cancelBtn.Click += (_, _) => win.Close(null);
+
+        passBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Avalonia.Input.Key.Enter) { e.Handled = true; win.Close(passBox.Text ?? string.Empty); }
+        };
+
+        win.Opened += (_, _) => passBox.Focus();
+
+        return await win.ShowDialog<string?>(this);
     }
 
     public async Task<string?> PromptForPassphraseAsync(string keyFilePath, string? hostname = null)
@@ -341,16 +407,15 @@ public partial class MainWindow : Window, ISessionPromptHost
         {
             Host = dialog.Host!,
             Port = dialog.Port,
-            Username = dialog.Username!,
+            Username = dialog.Username ?? string.Empty,
             KeyFilePath = dialog.KeyFile,
             EnableSftp = dialog.EnableSftp,
-            TransientPassword = dialog.Password,
             TransientSecretsConfirmed = true,
             JumpHosts = [.. dialog.JumpHosts],
         };
 
         var sessionName = string.IsNullOrWhiteSpace(dialog.SessionName)
-            ? $"{dialog.Username}@{dialog.Host}"
+            ? $"{dialog.Username ?? dialog.Host}@{dialog.Host}"
             : dialog.SessionName;
         var def = new SessionDefinition
         {
@@ -375,7 +440,8 @@ public partial class MainWindow : Window, ISessionPromptHost
             }
         }
 
-        await LaunchAndAddTabAsync(def);
+        if (!dialog.SaveOnly)
+            await LaunchAndAddTabAsync(def);
     }
 
     private async Task DoNewSerialAsync()
@@ -480,9 +546,10 @@ public partial class MainWindow : Window, ISessionPromptHost
         if (def.Kind != SessionKind.Ssh || def.Settings is not SshSettings sshSettings) return;
 
         var dialog = new SshConnectDialog(
-            editMode  : true,
-            prefill   : sshSettings,
-            appConfig : _config);
+            editMode    : true,
+            prefill     : sshSettings,
+            sessionName : def.Name,
+            appConfig   : _config);
 
         var result = await dialog.ShowDialog<bool?>(this);
         if (result != true) return;
@@ -509,7 +576,8 @@ public partial class MainWindow : Window, ISessionPromptHost
     {
         // Reuse the standard New-SSH dialog so the user gets the same fields
         // (host/user/key/jump-hosts) as the toolbar entry point. The session is
-        // saved into the group they right-clicked, but not auto-launched.
+        // saved into the group they right-clicked. If the user clicked Connect
+        // (not Save), it is also launched immediately.
         var dialog = new SshConnectDialog(editMode: false, appConfig: _config);
         var ok = await dialog.ShowDialog<bool?>(this);
         if (ok != true || string.IsNullOrWhiteSpace(dialog.Host)) return;
@@ -518,14 +586,14 @@ public partial class MainWindow : Window, ISessionPromptHost
         {
             Host        = dialog.Host!,
             Port        = dialog.Port,
-            Username    = dialog.Username!,
+            Username    = dialog.Username ?? string.Empty,
             KeyFilePath = dialog.KeyFile,
             EnableSftp  = dialog.EnableSftp,
             JumpHosts   = [.. dialog.JumpHosts],
         };
 
         var sessionName = string.IsNullOrWhiteSpace(dialog.SessionName)
-            ? $"{dialog.Username}@{dialog.Host}"
+            ? $"{dialog.Username ?? dialog.Host}@{dialog.Host}"
             : dialog.SessionName;
         var def = new SessionDefinition
         {
@@ -536,6 +604,12 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         SessionTree.AddSessionToGroup(targetGroup, def);
         SaveConfig();
+
+        if (!dialog.SaveOnly)
+        {
+            settings.TransientSecretsConfirmed = true;
+            await LaunchAndAddTabAsync(def);
+        }
     }
 
     private void OnTreeChanged(object? sender, EventArgs e)
@@ -578,6 +652,14 @@ public partial class MainWindow : Window, ISessionPromptHost
         {
             TerminalTabs.Items.Remove(connectingTab);
             // User cancelled — no error shown
+        }
+        catch (SshAuthenticationException ex)
+        {
+            TerminalTabs.Items.Remove(connectingTab);
+            // Clear the cached wrong password so the next launch re-prompts instead of failing silently
+            if (def.Settings is SshSettings authSs)
+                authSs.TransientPassword = string.Empty;
+            await ShowErrorAsync("Authentication failed", ex.Message);
         }
         catch (NotImplementedException ex)
         {
@@ -656,11 +738,18 @@ public partial class MainWindow : Window, ISessionPromptHost
             BorderThickness = new Thickness(0),
         };
 
-        var header = new StackPanel
+        var headerContent = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Children = { titleBlock, popOutButton, closeButton },
         };
+
+        // Wrap in a Border so we can paint left/right drop indicators via BorderThickness
+        var headerBorder = new Border
+        {
+            Child = headerContent,
+        };
+        DragDrop.SetAllowDrop(headerBorder, true);
 
         // Wrap the terminal in a Panel so we can layer the disconnect overlay on top.
         var host = new Panel();
@@ -668,7 +757,7 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         var tab = new TabItem
         {
-            Header = header,
+            Header  = headerBorder,
             Content = host,
         };
 
@@ -677,6 +766,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             Tab        = tab,
             Host       = host,
             TitleBlock = titleBlock,
+            HeaderBorder = headerBorder,
             Def        = def,
             Instance   = instance,
             // Capture the stable editor-session ID so we can close
@@ -688,6 +778,107 @@ public partial class MainWindow : Window, ISessionPromptHost
         WireSessionInstance(state, instance);
         popOutButton.Click += (_, _) => PopOutTab(tab);
         closeButton.Click  += async (_, _) => await CloseTabAsync(tab);
+
+        // --- Context menu ---
+        var closeItem  = new MenuItem { Header = "Close" };
+        var othersItem = new MenuItem { Header = "Close Others" };
+        var rightItem  = new MenuItem { Header = "Close to the Right" };
+        closeItem.Click  += async (_, _) => await CloseTabAsync(tab);
+        othersItem.Click += async (_, _) => await CloseOtherTabsAsync(tab);
+        rightItem.Click  += async (_, _) => await CloseTabsToRightAsync(tab);
+        var ctxMenu = new ContextMenu();
+        ctxMenu.Opening += (_, _) =>
+        {
+            var idx = TerminalTabs.Items.IndexOf(tab);
+            othersItem.IsEnabled = TerminalTabs.Items.Count > 1;
+            rightItem.IsEnabled  = idx >= 0 && idx < TerminalTabs.Items.Count - 1;
+        };
+        ctxMenu.Items.Add(closeItem);
+        ctxMenu.Items.Add(othersItem);
+        ctxMenu.Items.Add(rightItem);
+        headerBorder.ContextMenu = ctxMenu;
+
+        // --- Tab drag-and-drop ---
+        headerBorder.PointerPressed += (_, e) =>
+        {
+            if (e.GetCurrentPoint(headerBorder).Properties.IsLeftButtonPressed)
+            {
+                _tabDragCandidate = tab;
+                _tabDragStartPos  = e.GetPosition(headerBorder);
+                _tabDragPressArgs = e;
+            }
+        };
+
+        headerBorder.PointerMoved += async (_, e) =>
+        {
+            if (_tabDragCandidate != tab || _tabDragPressArgs is null) return;
+            if (!e.GetCurrentPoint(headerBorder).Properties.IsLeftButtonPressed)
+            {
+                _tabDragCandidate = null;
+                _tabDragPressArgs = null;
+                return;
+            }
+            var pos = e.GetPosition(headerBorder);
+            if (Math.Abs(pos.X - _tabDragStartPos.X) < 5 &&
+                Math.Abs(pos.Y - _tabDragStartPos.Y) < 5) return;
+
+            var pressArgs     = _tabDragPressArgs;
+            _tabDragCandidate = null;
+            _tabDragPressArgs = null;
+            s_tabDragPayload  = tab;
+            var transfer = new DataTransfer();
+            transfer.Add(DataTransferItem.Create(TabDragFormat, tab.Name ?? string.Empty));
+            await DragDrop.DoDragDropAsync(pressArgs, transfer, DragDropEffects.Move);
+            s_tabDragPayload = null;
+            ClearAllTabDropVisuals();
+        };
+
+        headerBorder.AddHandler(DragDrop.DragOverEvent, (object? _, DragEventArgs e) =>
+        {
+            if (!e.DataTransfer.Formats.Contains(TabDragFormat) ||
+                s_tabDragPayload is not TabItem dragged || dragged == tab)
+            {
+                e.DragEffects = DragDropEffects.None;
+                return;
+            }
+            e.DragEffects = DragDropEffects.Move;
+            e.Handled     = true;
+            var isLeft = e.GetPosition(headerBorder).X < headerBorder.Bounds.Width / 2;
+            SetTabDropVisual(headerBorder, isLeft ? TabDropSide.Left : TabDropSide.Right);
+        });
+
+        headerBorder.AddHandler(DragDrop.DragLeaveEvent, (object? _, DragEventArgs _2) =>
+            SetTabDropVisual(headerBorder, TabDropSide.None));
+
+        headerBorder.AddHandler(DragDrop.DropEvent, (object? _, DragEventArgs e) =>
+        {
+            SetTabDropVisual(headerBorder, TabDropSide.None);
+            if (!e.DataTransfer.Formats.Contains(TabDragFormat) ||
+                s_tabDragPayload is not TabItem dragged || dragged == tab) return;
+
+            var isLeft  = e.GetPosition(headerBorder).X < headerBorder.Bounds.Width / 2;
+            var items   = TerminalTabs.Items;
+            var fromIdx = items.IndexOf(dragged);
+            if (fromIdx < 0) return;
+
+            // Suppress the PTY-kill that normally fires when a TerminalControl
+            // is detached from the visual tree — the tab is only moving positions.
+            _tabStates.TryGetValue(dragged, out var draggedState);
+            var tc = draggedState?.Instance?.Terminal;
+            tc?.BeginReparent();
+
+            items.Remove(dragged);
+            var toIdx = items.IndexOf(tab);
+            if (toIdx < 0) toIdx = items.Count;
+            else if (!isLeft) toIdx++;
+            toIdx = Math.Clamp(toIdx, 0, items.Count);
+            items.Insert(toIdx, dragged);
+            TerminalTabs.SelectedItem = dragged;
+
+            // Re-enable the cleanup hook once the control is settled in its new slot.
+            if (tc != null)
+                Dispatcher.UIThread.Post(() => tc.EndReparent(), DispatcherPriority.Loaded);
+        });
 
         TerminalTabs.Items.Add(tab);
         TerminalTabs.SelectedItem = tab;
@@ -794,6 +985,102 @@ public partial class MainWindow : Window, ISessionPromptHost
         state.Host.Children.Add(newInstance.TabContent);
         WireSessionInstance(state, newInstance);
         FocusTerminal((Control?)newInstance.Terminal ?? newInstance.TabContent);
+    }
+
+    // -------------------------------------------------------------------------
+    // Tab drag-and-drop helpers
+    // -------------------------------------------------------------------------
+
+    private static void SetTabDropVisual(Border headerBorder, TabDropSide side)
+    {
+        switch (side)
+        {
+            case TabDropSide.Left:
+                headerBorder.BorderBrush     = TabDropBrush;
+                headerBorder.BorderThickness = new Thickness(2, 0, 0, 0);
+                break;
+            case TabDropSide.Right:
+                headerBorder.BorderBrush     = TabDropBrush;
+                headerBorder.BorderThickness = new Thickness(0, 0, 2, 0);
+                break;
+            default:
+                headerBorder.BorderThickness = new Thickness(0);
+                break;
+        }
+    }
+
+    private void ClearAllTabDropVisuals()
+    {
+        foreach (var s in _tabStates.Values)
+            SetTabDropVisual(s.HeaderBorder, TabDropSide.None);
+    }
+
+    private async Task CloseOtherTabsAsync(TabItem keepTab)
+    {
+        var others = TerminalTabs.Items.Cast<TabItem>()
+            .Where(t => t != keepTab && _tabStates.ContainsKey(t))
+            .ToList();
+        if (others.Count == 0) return;
+        if (others.Count >= 2 && !await ConfirmCloseTabsAsync(others.Count)) return;
+        foreach (var t in others)
+            await CloseTabAsync(t);
+    }
+
+    private async Task CloseTabsToRightAsync(TabItem tab)
+    {
+        var right = TerminalTabs.Items.Cast<TabItem>()
+            .SkipWhile(t => t != tab).Skip(1)
+            .Where(t => _tabStates.ContainsKey(t))
+            .ToList();
+        if (right.Count == 0) return;
+        if (right.Count >= 2 && !await ConfirmCloseTabsAsync(right.Count)) return;
+        foreach (var t in right)
+            await CloseTabAsync(t);
+    }
+
+    private async Task<bool> ConfirmCloseTabsAsync(int count)
+    {
+        var tcs       = new TaskCompletionSource<bool>();
+        var closeBtn  = new Button { Content = $"Close {count} tabs", IsDefault = true };
+        var cancelBtn = new Button { Content = "Cancel", IsCancel = true };
+
+        var dialog = new Window
+        {
+            Title = "Close Tabs",
+            Width = 320,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            SizeToContent = SizeToContent.Height,
+            RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Dark,
+            Content = new StackPanel
+            {
+                Margin  = new Thickness(20, 16),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"Close {count} tabs?",
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = Brushes.White,
+                    },
+                    new StackPanel
+                    {
+                        Orientation         = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { closeBtn, cancelBtn },
+                    },
+                },
+            },
+        };
+
+        closeBtn.Click  += (_, _) => { tcs.TrySetResult(true);  dialog.Close(); };
+        cancelBtn.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
+        dialog.Closed   += (_, _) => tcs.TrySetResult(false);
+
+        await dialog.ShowDialog(this);
+        return await tcs.Task;
     }
 
     private async Task CloseTabAsync(TabItem tab)

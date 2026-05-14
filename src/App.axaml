@@ -7,5 +7,15 @@
         <FluentTheme />
         <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml"/>
         <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml"/>
+        <!-- Remove the white cell selection border from all DataGrids globally -->
+        <Style Selector="DataGridCell">
+            <Setter Property="FocusAdorner" Value="{x:Null}"/>
+        </Style>
+        <Style Selector="DataGridCell:focus /template/ Grid#FocusVisual">
+            <Setter Property="IsVisible" Value="False"/>
+        </Style>
+        <Style Selector="DataGridCell:current /template/ Rectangle#CurrencyVisual">
+            <Setter Property="IsVisible" Value="False"/>
+        </Style>
     </Application.Styles>
 </Application>

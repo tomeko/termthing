@@ -4,22 +4,29 @@
              x:Class="TermThing.Views.SessionTreeView"
              Background="#252526">
 
-    <TreeView x:Name="SessionTree"
-              DoubleTapped="OnTreeDoubleTapped"
-              Background="Transparent">
+    <Panel>
+        <TreeView x:Name="SessionTree"
+                  DoubleTapped="OnTreeDoubleTapped"
+                  Background="Transparent"
+                  DragDrop.AllowDrop="True">
 
-        <!-- Bind IsExpanded on each container back to the node model (TwoWay so user toggles are saved). -->
-        <TreeView.Styles>
-            <Style Selector="TreeViewItem">
-                <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
-            </Style>
-        </TreeView.Styles>
+            <!-- Bind IsExpanded on each container back to the node model (TwoWay so user toggles are saved). -->
+            <TreeView.Styles>
+                <Style Selector="TreeViewItem">
+                    <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                </Style>
+            </TreeView.Styles>
 
-        <TreeView.ItemTemplate>
-            <TreeDataTemplate ItemsSource="{Binding Children}">
-                <TextBlock Text="{Binding Header}" Padding="2,1"/>
-            </TreeDataTemplate>
-        </TreeView.ItemTemplate>
-    </TreeView>
+            <TreeView.ItemTemplate>
+                <TreeDataTemplate ItemsSource="{Binding Children}">
+                    <TextBlock Text="{Binding Header}" Padding="2,1"/>
+                </TreeDataTemplate>
+            </TreeView.ItemTemplate>
+        </TreeView>
+
+        <!-- Overlay canvas for drag-and-drop visual indicators (insert line / drop-into highlight).
+             IsHitTestVisible=False so it never intercepts pointer events. -->
+        <Canvas x:Name="DropOverlayCanvas" IsHitTestVisible="False"/>
+    </Panel>
 
 </UserControl>

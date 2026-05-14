@@ -39,15 +39,12 @@ public sealed class SshSessionLauncher : ISessionLauncher
         var settings = definition.Settings as SshSettings
             ?? throw new InvalidOperationException("SshSettings required.");
 
-        // Show the full credentials dialog only when there's nothing to work with —
-        // no key file and no cached password — AND the user hasn't just been shown
-        // the same dialog from the New-SSH flow. Key-only sessions go straight to
-        // connect; if the key turns out to be encrypted we'll prompt for just the
-        // passphrase below.
-        bool needsPrompt = !settings.TransientSecretsConfirmed
-                        && string.IsNullOrWhiteSpace(settings.KeyFilePath)
-                        && string.IsNullOrEmpty(settings.TransientPassword);
-        if (needsPrompt)
+        // Show the full connect dialog only for truly incomplete sessions (no host configured).
+        // Saved sessions with host/port/username already set skip this entirely.
+        bool needsFullDialog = !settings.TransientSecretsConfirmed
+                            && string.IsNullOrWhiteSpace(settings.KeyFilePath)
+                            && string.IsNullOrWhiteSpace(settings.Host);
+        if (needsFullDialog)
         {
             var confirmed = await promptHost.PromptForSshSecretsAsync(definition);
             if (!confirmed) throw new OperationCanceledException("User cancelled SSH login.");
@@ -77,9 +74,23 @@ public sealed class SshSessionLauncher : ISessionLauncher
             }
         }
 
-        // ----------------------------------------------------------------
         // Resolve jump-host chain (empty = direct connect).
-        // ----------------------------------------------------------------
+        // Apply username fallback: if left blank, use the OS login name (matches ssh(1) default).
+        var effectiveUsername = string.IsNullOrWhiteSpace(settings.Username)
+            ? Environment.UserName
+            : settings.Username;
+
+        // For password-based auth (no key file): prompt for a password now, before connecting.
+        // We never persist passwords; they live only in the transient field for this session.
+        if (string.IsNullOrWhiteSpace(settings.KeyFilePath) &&
+            string.IsNullOrEmpty(settings.TransientPassword))
+        {
+            var password = await promptHost.PromptForPasswordAsync(effectiveUsername, settings.Host);
+            if (password is null)
+                throw new OperationCanceledException("User cancelled password entry.");
+            settings.TransientPassword = password;
+        }
+
         var hops = JumpHostResolver.Resolve(settings, _getConfig());
 
         SshClient client;
@@ -89,7 +100,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
         {
             // --- Direct connection (existing path) ---
             var connectionInfo = SshConnectionInfoFactory.Build(
-                settings.Host, settings.Port, settings.Username,
+                settings.Host, settings.Port, effectiveUsername,
                 settings.KeyFilePath, settings.TransientKeyPassphrase, settings.TransientPassword);
 
             HostKeyEventArgs? pendingKeyArgs = null;
@@ -175,7 +186,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             {
                 // Direct — reuse the same ConnectionInfo as the shell client.
                 var directCi = SshConnectionInfoFactory.Build(
-                    settings.Host, settings.Port, settings.Username,
+                    settings.Host, settings.Port, effectiveUsername,
                     settings.KeyFilePath, settings.TransientKeyPassphrase, settings.TransientPassword);
                 sftpClient = new SftpClient(directCi);
             }
@@ -195,7 +206,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
                     sftpFwd.Start();
                     var sftpCi = SshConnectionInfoFactory.Build(
                         System.Net.IPAddress.Loopback.ToString(), (int)sftpFwd.BoundPort,
-                        settings.Username, settings.KeyFilePath,
+                        effectiveUsername, settings.KeyFilePath,
                         settings.TransientKeyPassphrase, settings.TransientPassword);
                     sftpClient = new SftpClient(sftpCi);
                     // Store the extra forward so it is disposed with the chain.

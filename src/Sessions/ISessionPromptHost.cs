@@ -20,6 +20,13 @@ public interface ISessionPromptHost
     Task<bool> PromptForSshSecretsAsync(SessionDefinition definition);
 
     /// <summary>
+    /// Shows a minimal password-only prompt when connecting to a host that requires
+    /// password authentication and no key file is configured.
+    /// Returns the password string, or <c>null</c> if the user cancelled.
+    /// </summary>
+    Task<string?> PromptForPasswordAsync(string username, string host);
+
+    /// <summary>
     /// Shows a minimal passphrase-only prompt for an encrypted private key.
     /// <paramref name="hostname"/> is shown in the dialog title when provided.
     /// Returns the passphrase string, or <c>null</c> if the user cancelled.

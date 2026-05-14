@@ -1,8 +1,11 @@
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.VisualTree;
+using System.Linq;
 using TermThing.Sessions;
+using Avalonia;
 
 namespace TermThing.Views;
 
@@ -28,6 +31,35 @@ public partial class SessionTreeView : UserControl
     private SessionDefinition? _clipboard;
     private bool _isCut;
 
+    // Drag-and-drop state
+    private enum DropZone { Before, After, Into }
+    private SessionTreeNode? _dragCandidate;
+    private PointerPressedEventArgs? _dragPressArgs;
+    private Point _dragStartPos;
+    private SessionTreeNode? _currentDropTarget;
+    private DropZone _currentDropZone;
+    // Custom DataFormat sentinel + static slot (DataTransfer only carries files/text natively)
+    private static readonly DataFormat<string> TreeDragFormat =
+        DataFormat.CreateStringApplicationFormat("termthing-tree-node");
+    private static SessionTreeNode? s_dragPayload;
+
+    // Overlay visuals for DnD feedback
+    private Canvas _overlayCanvas = null!;
+    private readonly Border _dropLine = new()
+    {
+        Height = 2,
+        Background = new SolidColorBrush(Color.Parse("#2196F3")),
+        IsVisible = false,
+        IsHitTestVisible = false,
+        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch,
+    };
+    private readonly Border _dropHighlight = new()
+    {
+        Background = new SolidColorBrush(Color.FromArgb(0x40, 0x21, 0x96, 0xF3)),
+        IsVisible = false,
+        IsHitTestVisible = false,
+    };
+
     private TreeView _tree = null!;
 
     // Context menu items whose enabled state depends on what is selected
@@ -46,6 +78,15 @@ public partial class SessionTreeView : UserControl
         InitializeComponent();
 
         _tree = this.FindControl<TreeView>("SessionTree")!;
+        _overlayCanvas = this.FindControl<Canvas>("DropOverlayCanvas")!;
+        _overlayCanvas.Children.Add(_dropLine);
+        _overlayCanvas.Children.Add(_dropHighlight);
+
+        // Register drag-and-drop handlers
+        _tree.AddHandler(DragDrop.DragOverEvent,  OnTreeDragOver);
+        _tree.AddHandler(DragDrop.DropEvent,       OnTreeDrop);
+        _tree.AddHandler(DragDrop.DragLeaveEvent,  OnTreeDragLeave);
+        _tree.AddHandler(PointerMovedEvent, OnTreePointerMoved, RoutingStrategies.Tunnel);
 
         // Build the context menu in code so we hold direct references to
         // selection-sensitive items and can enable/disable them reliably.
@@ -105,12 +146,30 @@ public partial class SessionTreeView : UserControl
 
     private void OnTreePointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (e.GetCurrentPoint(null).Properties.IsRightButtonPressed)
+        var props = e.GetCurrentPoint(null).Properties;
+
+        if (props.IsRightButtonPressed)
         {
             // Walk up from the event source to find the nearest TreeViewItem so
             // that SelectedItem is correct when OnContextMenuOpening fires.
             var tvi = (e.Source as Control)?.FindAncestorOfType<TreeViewItem>();
             _tree.SelectedItem = tvi?.DataContext;
+        }
+
+        if (props.IsLeftButtonPressed)
+        {
+            var tvi = (e.Source as Control)?.FindAncestorOfType<TreeViewItem>();
+            if (tvi?.DataContext is SessionTreeNode node)
+            {
+                _dragCandidate = node;
+                _dragStartPos  = e.GetPosition(_tree);
+                _dragPressArgs = e;
+            }
+            else
+            {
+                _dragCandidate = null;
+                _dragPressArgs = null;
+            }
         }
     }
 
@@ -419,5 +478,258 @@ public partial class SessionTreeView : UserControl
         cancelBtn.Click += (_, _) => { tcs.TrySetResult(false); win.Close(); };
         await win.ShowDialog(TopLevel.GetTopLevel(this) as Window ?? throw new InvalidOperationException());
         return await tcs.Task;
+    }
+
+    // -----------------------------------------------------------------------
+    // Drag-and-drop
+    // -----------------------------------------------------------------------
+
+    // Avalonia 12 DataTransfer only carries files/text; use a static slot for in-process custom payloads.
+
+    private async void OnTreePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_dragCandidate is null || _dragPressArgs is null) return;
+        if (!e.GetCurrentPoint(null).Properties.IsLeftButtonPressed)
+        {
+            _dragCandidate = null;
+            _dragPressArgs = null;
+            return;
+        }
+
+        var pos = e.GetPosition(_tree);
+        if (Math.Abs(pos.X - _dragStartPos.X) < 5 && Math.Abs(pos.Y - _dragStartPos.Y) < 5)
+            return;
+
+        var candidate  = _dragCandidate;
+        var pressArgs  = _dragPressArgs;
+        _dragCandidate = null; // prevent re-entry
+        _dragPressArgs = null;
+        s_dragPayload  = candidate;
+
+        var transfer = new DataTransfer();
+        transfer.Add(DataTransferItem.Create(TreeDragFormat, candidate.Header ?? string.Empty));
+        await DragDrop.DoDragDropAsync(pressArgs, transfer, DragDropEffects.Move);
+        s_dragPayload = null;
+        ClearDropVisuals();
+    }
+
+    private void OnTreeDragOver(object? sender, DragEventArgs e)
+    {
+        if (!e.DataTransfer.Formats.Contains(TreeDragFormat) || s_dragPayload is not SessionTreeNode draggedNode)
+        {
+            e.DragEffects = DragDropEffects.None;
+            ClearDropVisuals();
+            return;
+        }
+
+        var pos = e.GetPosition(_tree);
+        var tvi = FindTreeViewItemAt(_tree.InputHitTest(pos) as Control);
+
+        if (tvi?.DataContext is not SessionTreeNode targetNode || targetNode == draggedNode)
+        {
+            e.DragEffects = DragDropEffects.None;
+            ClearDropVisuals();
+            _currentDropTarget = null;
+            return;
+        }
+
+        var tviTopInTree = tvi.TranslatePoint(new Point(0, 0), _tree);
+        if (!tviTopInTree.HasValue) { ClearDropVisuals(); return; }
+
+        var tviHeight  = tvi.Bounds.Height;
+        var relativeY  = pos.Y - tviTopInTree.Value.Y;
+        var (canDrop, zone) = ComputeDropZone(draggedNode, targetNode, relativeY, tviHeight);
+
+        if (!canDrop)
+        {
+            e.DragEffects = DragDropEffects.None;
+            ClearDropVisuals();
+            _currentDropTarget = null;
+            return;
+        }
+
+        e.DragEffects = DragDropEffects.Move;
+        e.Handled     = true;
+        _currentDropTarget = targetNode;
+        _currentDropZone   = zone;
+
+        var tviTopInCanvas = tvi.TranslatePoint(new Point(0, 0), _overlayCanvas);
+        if (tviTopInCanvas.HasValue)
+            ShowDropVisual(tviTopInCanvas.Value.Y, tviHeight, zone);
+    }
+
+    private void OnTreeDragLeave(object? sender, DragEventArgs e)
+    {
+        ClearDropVisuals();
+        _currentDropTarget = null;
+    }
+
+    private void OnTreeDrop(object? sender, DragEventArgs e)
+    {
+        ClearDropVisuals();
+
+        if (!e.DataTransfer.Formats.Contains(TreeDragFormat) || s_dragPayload is not SessionTreeNode draggedNode)
+            return;
+        if (_currentDropTarget is null) return;
+
+        var target = _currentDropTarget;
+        var zone   = _currentDropZone;
+        _currentDropTarget = null;
+
+        PerformDrop(draggedNode, target, zone);
+    }
+
+    private static (bool canDrop, DropZone zone) ComputeDropZone(
+        SessionTreeNode dragged, SessionTreeNode target, double relativeY, double height)
+    {
+        bool targetIsGroup = target.IsGroup;
+        bool sourceIsGroup = dragged.IsGroup;
+
+        if (!targetIsGroup)
+        {
+            // Target is a session — groups cannot drop onto sessions
+            if (sourceIsGroup) return (false, default);
+            return (true, relativeY < height * 0.5 ? DropZone.Before : DropZone.After);
+        }
+
+        // Target is a group
+        bool before = relativeY < height * 0.3;
+        bool after  = relativeY > height * 0.7;
+
+        if (sourceIsGroup)
+        {
+            // Group onto group
+            if (before) return (true, DropZone.Before);
+            if (after)  return (true, DropZone.After);
+            // Into: prevent dropping a group into itself or a descendant
+            var dragGrp   = (SessionGroup)dragged.Tag;
+            var targetGrp = (SessionGroup)target.Tag;
+            return IsAncestorOrSelf(dragGrp, targetGrp) ? (false, default) : (true, DropZone.Into);
+        }
+        else
+        {
+            // Session onto group — only Into (middle) allowed; before/after is ambiguous
+            if (!before && !after) return (true, DropZone.Into);
+            return (false, default);
+        }
+    }
+
+    private void PerformDrop(SessionTreeNode draggedNode, SessionTreeNode targetNode, DropZone zone)
+    {
+        if (RootGroup is null) return;
+
+        if (draggedNode.Tag is SessionDefinition def)
+        {
+            var sourceGroup = FindGroupContaining(def, RootGroup);
+            if (sourceGroup is null) return;
+
+            if (targetNode.Tag is SessionDefinition targetDef)
+            {
+                // Session onto session: reorder (within same or across groups)
+                var targetGroup = FindGroupContaining(targetDef, RootGroup);
+                if (targetGroup is null) return;
+                sourceGroup.Sessions.Remove(def);
+                var idx = targetGroup.Sessions.IndexOf(targetDef);
+                if (zone == DropZone.After) idx++;
+                idx = Math.Clamp(idx, 0, targetGroup.Sessions.Count);
+                def.GroupId = targetGroup.Id;
+                targetGroup.Sessions.Insert(idx, def);
+            }
+            else if (targetNode.Tag is SessionGroup destGroup)
+            {
+                // Session into group
+                sourceGroup.Sessions.Remove(def);
+                def.GroupId = destGroup.Id;
+                destGroup.Sessions.Add(def);
+            }
+            else return;
+        }
+        else if (draggedNode.Tag is SessionGroup grp)
+        {
+            var sourceParent = FindGroupContainingGroup(grp, RootGroup);
+            if (sourceParent is null) return;
+
+            if (targetNode.Tag is SessionGroup targetGrp)
+            {
+                if (zone == DropZone.Into)
+                {
+                    // Move group into another group
+                    if (IsAncestorOrSelf(grp, targetGrp)) return;
+                    sourceParent.Subgroups.Remove(grp);
+                    targetGrp.Subgroups.Add(grp);
+                }
+                else
+                {
+                    // Reorder groups among siblings
+                    var targetParent = FindGroupContainingGroup(targetGrp, RootGroup);
+                    if (targetParent is null) return;
+                    sourceParent.Subgroups.Remove(grp);
+                    var idx = targetParent.Subgroups.IndexOf(targetGrp);
+                    if (zone == DropZone.After) idx++;
+                    idx = Math.Clamp(idx, 0, targetParent.Subgroups.Count);
+                    targetParent.Subgroups.Insert(idx, grp);
+                }
+            }
+            else return; // group onto session — not allowed
+        }
+        else return;
+
+        RebuildTree();
+        TreeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ShowDropVisual(double topY, double itemHeight, DropZone zone)
+    {
+        var w = _overlayCanvas.Bounds.Width;
+
+        if (zone == DropZone.Into)
+        {
+            Canvas.SetLeft(_dropHighlight, 0);
+            Canvas.SetTop(_dropHighlight, topY);
+            _dropHighlight.Width   = w;
+            _dropHighlight.Height  = itemHeight;
+            _dropHighlight.IsVisible = true;
+            _dropLine.IsVisible      = false;
+        }
+        else
+        {
+            var lineY = zone == DropZone.Before ? topY : topY + itemHeight - 2;
+            Canvas.SetLeft(_dropLine, 0);
+            Canvas.SetTop(_dropLine, lineY);
+            _dropLine.Width    = w;
+            _dropLine.IsVisible      = true;
+            _dropHighlight.IsVisible = false;
+        }
+    }
+
+    private void ClearDropVisuals()
+    {
+        _dropLine.IsVisible      = false;
+        _dropHighlight.IsVisible = false;
+    }
+
+    private static TreeViewItem? FindTreeViewItemAt(Control? hit)
+    {
+        if (hit is TreeViewItem tvi) return tvi;
+        return hit?.FindAncestorOfType<TreeViewItem>();
+    }
+
+    private static SessionGroup? FindGroupContainingGroup(SessionGroup grp, SessionGroup root)
+    {
+        if (root.Subgroups.Contains(grp)) return root;
+        foreach (var sub in root.Subgroups)
+        {
+            var found = FindGroupContainingGroup(grp, sub);
+            if (found is not null) return found;
+        }
+        return null;
+    }
+
+    private static bool IsAncestorOrSelf(SessionGroup ancestor, SessionGroup query)
+    {
+        if (ancestor == query) return true;
+        foreach (var sub in ancestor.Subgroups)
+            if (IsAncestorOrSelf(sub, query)) return true;
+        return false;
     }
 }

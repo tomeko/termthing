@@ -4,15 +4,6 @@
              x:Class="TermThing.Views.SftpFileBrowserView"
              Background="#1e1e1e">
     <UserControl.Styles>
-        <Style Selector="DataGridCell">
-            <Setter Property="FocusAdorner" Value="{x:Null}"/>
-        </Style>
-        <Style Selector="DataGridCell:focus /template/ Grid#FocusVisual">
-            <Setter Property="IsVisible" Value="False"/>
-        </Style>
-        <Style Selector="DataGridCell:current /template/ Rectangle#CurrencyVisual">
-            <Setter Property="IsVisible" Value="False"/>
-        </Style>
         <!-- Drop-target row highlight: applied when IsDropTarget is True on the entry -->
         <Style Selector="DataGridRow">
             <Setter Property="Background" Value="Transparent"/>

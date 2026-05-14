@@ -40,14 +40,6 @@
             <TextBox Grid.Column="1" x:Name="UsernameTextBox"/>
         </Grid>
 
-        <!-- Secret fields (connect mode only) -->
-        <StackPanel x:Name="SecretFieldsPanel" Margin="0,0,0,0">
-            <Grid ColumnDefinitions="130,*" Margin="0,0,0,6">
-                <TextBlock Grid.Column="0" Text="Password:" VerticalAlignment="Center"/>
-                <TextBox Grid.Column="1" x:Name="PasswordTextBox" PasswordChar="*"/>
-            </Grid>
-        </StackPanel>
-
         <!-- Private key file -->
         <Grid ColumnDefinitions="130,*,Auto" Margin="0,0,0,6">
             <TextBlock Grid.Column="0" Text="Private key file:" VerticalAlignment="Center"/>
@@ -111,6 +103,7 @@
                           IsVisible="False"/>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                 <Button x:Name="ConnectButton" Content="Connect" Click="OnConnectClicked" IsDefault="True"/>
+                <Button x:Name="SaveButton"    Content="Save"    Click="OnSaveClicked"    IsVisible="False"/>
                 <Button Content="Cancel" Click="OnCancelClicked" IsCancel="True"/>
             </StackPanel>
         </Grid>

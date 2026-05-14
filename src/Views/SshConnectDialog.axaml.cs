@@ -43,27 +43,29 @@ public partial class SshConnectDialog : Window
     public string? Host            { get; private set; }
     public int     Port            { get; private set; } = 22;
     public string? Username        { get; private set; }
-    public string? Password        { get; private set; }
     public string? KeyFile         { get; private set; }
     public bool    EnableSftp      { get; private set; }
     public bool    SaveAsSession   { get; private set; }
     public string? SessionName     { get; private set; }
+    /// <summary>True when the user clicked "Save" rather than "Connect".</summary>
+    public bool    SaveOnly        { get; private set; }
 
     // Output — jump hosts (edit mode only)
     public IReadOnlyList<JumpHost> JumpHosts => [.. _jumpItems.Select(i => i.Hop)];
 
-    public SshConnectDialog(bool editMode = false, SshSettings? prefill = null, AppConfig? appConfig = null)
+    public SshConnectDialog(bool editMode = false, SshSettings? prefill = null, string? sessionName = null, AppConfig? appConfig = null)
     {
         _editMode  = editMode;
         _appConfig = appConfig;
         InitializeComponent();
         Opened += (_, _) => (editMode ? (Control)EditSessionNameTextBox : HostTextBox).Focus();
 
-        // Edit mode: hide secret fields, show Name field, no "Save as session" row
-        SecretFieldsPanel.IsVisible  = !editMode;
+        // Edit mode: show Name field, no "Save as session" row; password is always entered
+        // interactively in the terminal — no password field in the dialog.
         SaveAsSessionRow.IsVisible   = false;   // placeholder row — always hidden
         SessionNameRow.IsVisible     = !editMode;
         SaveSessionToggle.IsVisible  = !editMode;
+        SaveButton.IsVisible         = !editMode;
         NameRow.IsVisible            = editMode;
         JumpHostsSection.IsVisible   = true;
 
@@ -84,6 +86,10 @@ public partial class SshConnectDialog : Window
             foreach (var hop in prefill.JumpHosts)
                 _jumpItems.Add(MakeListItem(hop));
         }
+
+        // In edit mode, pre-populate the session name from the definition (not from SshSettings)
+        if (editMode && !string.IsNullOrWhiteSpace(sessionName))
+            EditSessionNameTextBox.Text = sessionName;
 
         Title = editMode ? "Edit SSH Session" : "SSH Connection";
         ConnectButton.Content = editMode ? "Save" : "Connect";
@@ -154,11 +160,13 @@ public partial class SshConnectDialog : Window
         { ShowError("Port must be a number between 1 and 65535."); return; }
 
         var username = UsernameTextBox.Text?.Trim();
-        if (string.IsNullOrWhiteSpace(username)) { ShowError("Username is required."); return; }
+        // Edit mode requires a username (it will be persisted); connect mode allows blank
+        // (user authenticates interactively in the terminal).
+        if (_editMode && string.IsNullOrWhiteSpace(username)) { ShowError("Username is required."); return; }
 
         Host       = host;
         Port       = port;
-        Username   = username;
+        Username   = string.IsNullOrWhiteSpace(username) ? null : username;
         KeyFile    = string.IsNullOrWhiteSpace(KeyFileTextBox.Text) ? null : KeyFileTextBox.Text.Trim();
         EnableSftp = SftpCheckBox.IsChecked == true;
 
@@ -168,7 +176,6 @@ public partial class SshConnectDialog : Window
         }
         else
         {
-            Password     = PasswordTextBox.Text;
             SaveAsSession = SaveSessionToggle.IsChecked == true;
             SessionName   = SessionNameTextBox.Text?.Trim();
             if (SaveAsSession && string.IsNullOrWhiteSpace(SessionName))
@@ -179,6 +186,32 @@ public partial class SshConnectDialog : Window
     }
 
     private void OnCancelClicked(object? sender, RoutedEventArgs e) => Close(false);
+
+    private void OnSaveClicked(object? sender, RoutedEventArgs e)
+    {
+        ErrorTextBlock.IsVisible = false;
+
+        var host = HostTextBox.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(host)) { ShowError("Host is required."); return; }
+
+        if (!int.TryParse(PortTextBox.Text, out var port) || port <= 0 || port > 65535)
+        { ShowError("Port must be a number between 1 and 65535."); return; }
+
+        var username = UsernameTextBox.Text?.Trim();
+        Host       = host;
+        Port       = port;
+        Username   = string.IsNullOrWhiteSpace(username) ? null : username;
+        KeyFile    = string.IsNullOrWhiteSpace(KeyFileTextBox.Text) ? null : KeyFileTextBox.Text.Trim();
+        EnableSftp = SftpCheckBox.IsChecked == true;
+
+        SaveAsSession = true;  // Save button always persists the session
+        SessionName   = SessionNameTextBox.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(SessionName))
+            SessionName = $"{username ?? host}@{host}";
+
+        SaveOnly = true;
+        Close(true);
+    }
 
     private void ShowError(string msg)
     {
