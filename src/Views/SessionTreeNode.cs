@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using Avalonia.Media;
+using Material.Icons;
 using TermThing.Sessions;
 
 namespace TermThing.Views;
@@ -14,8 +16,22 @@ public class SessionTreeNode : INotifyPropertyChanged
     public required object Tag { get; init; }   // SessionDefinition or SessionGroup
     public ObservableCollection<SessionTreeNode> Children { get; } = [];
 
+    /// <summary>Resolved icon kind for this node (group = Folder, session = custom or kind-default).</summary>
+    public MaterialIconKind IconKindEnum { get; init; } = MaterialIconKind.Folder;
+
+    /// <summary>Brush for the icon. Never null — returns a default gray when no custom color is set.</summary>
+    public IBrush IconBrush { get; init; } = new SolidColorBrush(Color.Parse("#BDBDBD"));
+
     public bool IsGroup   => Tag is SessionGroup;
     public bool IsSession => Tag is SessionDefinition;
+
+    /// <summary>Total recursive session count (set when wrapping a group node).</summary>
+    public int ChildCount { get; init; }
+
+    public string ChildCountLabel => ChildCount == 1 ? "(1 session)" : $"({ChildCount} sessions)";
+
+    /// <summary>True when this is a collapsed group with more than 1 descendant session.</summary>
+    public bool ShowChildCount => IsGroup && !IsExpanded && ChildCount > 1;
 
     /// <summary>
     /// Raised when <see cref="IsExpanded"/> changes so the TwoWay binding in the
@@ -31,6 +47,7 @@ public class SessionTreeNode : INotifyPropertyChanged
             if (_isExpanded == value) return;
             _isExpanded = value;
             OnPropertyChanged();
+            OnPropertyChanged(nameof(ShowChildCount));
 
             // Persist group expansion state — session nodes are leaves and don't need this.
             if (Tag is SessionGroup group)

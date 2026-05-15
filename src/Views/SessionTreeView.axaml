@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:TermThing.Views"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
              x:Class="TermThing.Views.SessionTreeView"
              Background="#252526">
 
@@ -8,6 +9,7 @@
         <TreeView x:Name="SessionTree"
                   DoubleTapped="OnTreeDoubleTapped"
                   Background="Transparent"
+                  SelectionMode="Multiple"
                   DragDrop.AllowDrop="True">
 
             <!-- Bind IsExpanded on each container back to the node model (TwoWay so user toggles are saved). -->
@@ -19,7 +21,19 @@
 
             <TreeView.ItemTemplate>
                 <TreeDataTemplate ItemsSource="{Binding Children}">
-                    <TextBlock Text="{Binding Header}" Padding="2,1"/>
+                    <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                        <materialIcons:MaterialIcon Kind="{Binding IconKindEnum}"
+                                                    Width="16" Height="16"
+                                                    Foreground="{Binding IconBrush}"
+                                                    VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding Header}" Padding="2,1" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ChildCountLabel}"
+                                   IsVisible="{Binding ShowChildCount}"
+                                   Foreground="#AAAAAA"
+                                   FontSize="11"
+                                   VerticalAlignment="Center"
+                                   Margin="2,0,0,0"/>
+                    </StackPanel>
                 </TreeDataTemplate>
             </TreeView.ItemTemplate>
         </TreeView>

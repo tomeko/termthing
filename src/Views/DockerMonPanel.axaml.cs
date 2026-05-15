@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using System.Collections.ObjectModel;
 using TermThing.Ssh;
+using TermThing.Views.Behaviors;
 
 namespace TermThing.Views;
 
@@ -26,6 +27,7 @@ public partial class DockerMonPanel : UserControl
         _containersGrid = this.FindControl<DataGrid>("ContainersGrid")!;
 
         _containersGrid.ItemsSource = Containers;
+        DataGridExt.SetDeselectOnEmptyClick(_containersGrid, true);
 
         _poller.Snapshot += OnSnapshot;
         _poller.Error    += OnPollerError;

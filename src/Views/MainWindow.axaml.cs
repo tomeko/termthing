@@ -8,6 +8,8 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Iciclecreek.Terminal;
+using Material.Icons;
+using Material.Icons.Avalonia;
 using Renci.SshNet.Common;
 using System.Collections.Generic;
 using System.Linq;
@@ -163,8 +165,8 @@ public partial class MainWindow : Window, ISessionPromptHost
             MinWidth = 260,
         };
 
-        var okBtn     = new Button { Content = "OK",     HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Margin = new Avalonia.Thickness(0,0,8,0) };
-        var cancelBtn = new Button { Content = "Cancel", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right };
+        var okBtn     = new Button { Content = "OK",     HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Margin = new Avalonia.Thickness(0,0,8,0), IsDefault = true };
+        var cancelBtn = new Button { Content = "Cancel", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, IsCancel = true };
 
         var win = new Window
         {
@@ -220,8 +222,8 @@ public partial class MainWindow : Window, ISessionPromptHost
             MinWidth = 260,
         };
 
-        var okBtn     = new Button { Content = "OK",     HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Margin = new Avalonia.Thickness(0,0,8,0) };
-        var cancelBtn = new Button { Content = "Cancel", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right };
+        var okBtn     = new Button { Content = "OK",     HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Margin = new Avalonia.Thickness(0,0,8,0), IsDefault = true };
+        var cancelBtn = new Button { Content = "Cancel", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, IsCancel = true };
 
         var win = new Window
         {
@@ -295,10 +297,24 @@ public partial class MainWindow : Window, ISessionPromptHost
         await win.ShowDialog(this);
     }
 
+    private async void OnMainWindowKeyDown(object? sender, KeyEventArgs e)
+    {
+        bool ctrlOrMeta = e.KeyModifiers.HasFlag(KeyModifiers.Control)
+                       || e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+        if (ctrlOrMeta && e.Key == Key.N)
+        {
+            e.Handled = true;
+            await OnNewSessionPrimaryAsync();
+        }
+    }
+
     /// <summary>
     /// Primary New Session click — opens the last-used session kind dialog.
     /// </summary>
-    private async void OnNewSessionPrimaryClicked(object? sender, RoutedEventArgs e)
+    private async void OnNewSessionPrimaryClicked(object? sender, RoutedEventArgs e) =>
+        await OnNewSessionPrimaryAsync();
+
+    private async Task OnNewSessionPrimaryAsync()
     {
         switch (SettingsService.Temp.LastNewSessionKind)
         {
@@ -711,6 +727,16 @@ public partial class MainWindow : Window, ISessionPromptHost
 
     private void AddTab(ISessionInstance instance, SessionDefinition def, string initialTitle)
     {
+        var tabIcon = new MaterialIcon
+        {
+            Kind              = ResolveIconKind(def),
+            Width             = 16,
+            Height            = 16,
+            Foreground        = ResolveIconBrush(def),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(0, 0, 5, 0),
+        };
+
         var titleBlock = new TextBlock
         {
             Text = initialTitle,
@@ -741,7 +767,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         var headerContent = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Children = { titleBlock, popOutButton, closeButton },
+            Children = { tabIcon, titleBlock, popOutButton, closeButton },
         };
 
         // Wrap in a Border so we can paint left/right drop indicators via BorderThickness
@@ -1107,6 +1133,29 @@ public partial class MainWindow : Window, ISessionPromptHost
         ClearSftpPanelIfNeeded(tab);
     }
 
+    private static MaterialIconKind ResolveIconKind(SessionDefinition def)
+    {
+        if (def.IconKind is not null && Enum.TryParse<MaterialIconKind>(def.IconKind, out var custom))
+            return custom;
+        return def.Kind switch
+        {
+            SessionKind.Local  => MaterialIconKind.Monitor,
+            SessionKind.Ssh    => MaterialIconKind.Server,
+            SessionKind.Serial => MaterialIconKind.Usb,
+            _                  => MaterialIconKind.HelpCircleOutline,
+        };
+    }
+
+    private static IBrush ResolveIconBrush(SessionDefinition def)
+    {
+        if (def.IconColor is not null)
+        {
+            try { return new SolidColorBrush(Color.Parse(def.IconColor)); }
+            catch { }
+        }
+        return new SolidColorBrush(Color.Parse("#BDBDBD"));
+    }
+
     /// <summary>
     /// Removes the tab from the main strip and opens it as an independent floating window.
     /// </summary>
@@ -1144,6 +1193,8 @@ public partial class MainWindow : Window, ISessionPromptHost
             state.Host,
             state.Instance?.SftpPanel,
             state.TitleBlock,
+            ResolveIconKind(state.Def),
+            ResolveIconBrush(state.Def),
             () => DockBackSession(state),
             async () => await CloseTabAsync(state.Tab))
         {
@@ -1340,6 +1391,7 @@ public partial class MainWindow : Window, ISessionPromptHost
 
     private Task ShowErrorAsync(string title, string message)
     {
+        var okBtn = new Button { Content = "OK", HorizontalAlignment = HorizontalAlignment.Right, IsDefault = true };
         var win = new Window
         {
             Title = title,
@@ -1354,14 +1406,16 @@ public partial class MainWindow : Window, ISessionPromptHost
                 Children =
                 {
                     new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
-                    new Button { Content = "OK", HorizontalAlignment = HorizontalAlignment.Right },
+                    okBtn,
                 }
             },
         };
-        var ok = (Button)((StackPanel)win.Content).Children[1];
-        ok.Click += (_, _) => win.Close();
+        okBtn.Click += (_, _) => win.Close();
         return win.ShowDialog(this);
     }
+
+    Task ISessionPromptHost.ShowErrorAsync(string title, string message) =>
+        ShowErrorAsync(title, message);
 
     /// <summary>Finds a saved <see cref="SessionDefinition"/> by id, or null if not found.</summary>
     private static SessionDefinition? FindSessionById(Guid id, SessionGroup group)

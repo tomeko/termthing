@@ -51,6 +51,29 @@ public sealed class SshSessionLauncher : ISessionLauncher
             settings = (SshSettings)definition.Settings!;
         }
 
+        // Pre-flight: probe the first hop with a short TCP connect before prompting for
+        // credentials, so the user isn't asked for a password/passphrase for an unreachable host.
+        var firstHop = settings.JumpHosts.Count > 0 ? settings.JumpHosts[0] : null;
+        var probeHost = firstHop is not null ? firstHop.Host : settings.Host;
+        var probePort = firstHop is not null ? firstHop.Port : settings.Port;
+
+        if (!string.IsNullOrWhiteSpace(probeHost))
+        {
+            using var probe = new System.Net.Sockets.TcpClient();
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await probe.ConnectAsync(probeHost, probePort, cts.Token);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException { CancellationToken.IsCancellationRequested: false })
+            {
+                await promptHost.ShowErrorAsync(
+                    "Host unreachable",
+                    $"Cannot reach {probeHost}:{probePort}.\n\n{ex.Message}");
+                throw new OperationCanceledException("Host unreachable.");
+            }
+        }
+
         // If a key file is configured and we don't have a passphrase yet, probe it now.
         // SSH.NET throws SshPassPhraseNullOrEmptyException when the key is encrypted
         // but no passphrase was supplied; show a minimal passphrase popup in that case.

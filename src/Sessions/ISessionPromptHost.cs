@@ -40,4 +40,11 @@ public interface ISessionPromptHost
     /// spurious empty window appears behind the dialog.
     /// </summary>
     Task<HostKeyAction> PromptHostKeyAsync(string host, int port, KnownHostStatus status, HostKeyEventArgs args);
+
+    /// <summary>
+    /// Shows a non-blocking error dialog. Used by launchers to surface pre-flight
+    /// failures (e.g. host unreachable) without throwing an exception that would
+    /// produce a second error notification.
+    /// </summary>
+    Task ShowErrorAsync(string title, string message);
 }

@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
         x:Class="TermThing.Views.FloatingSessionWindow"
         Title="Session"
         RequestedThemeVariant="Dark"
@@ -12,15 +13,20 @@
         <!-- Toolbar: session title + Dock Back button -->
         <Grid DockPanel.Dock="Top"
               Background="#1e1e1e"
-              ColumnDefinitions="*,Auto"
+              ColumnDefinitions="Auto,*,Auto"
               Margin="8,4">
+            <materialIcons:MaterialIcon x:Name="TitleIcon"
+                                        Grid.Column="0"
+                                        Width="16" Height="16"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,6,0"/>
             <TextBlock x:Name="TitleText"
-                       Grid.Column="0"
+                       Grid.Column="1"
                        VerticalAlignment="Center"
                        Foreground="#cccccc"
                        FontSize="13"/>
             <Button x:Name="DockBackButton"
-                    Grid.Column="1"
+                    Grid.Column="2"
                     Content="⤵ Dock Back"
                     Padding="8,3"/>
         </Grid>

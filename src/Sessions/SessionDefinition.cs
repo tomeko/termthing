@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace TermThing.Sessions;
 
@@ -128,16 +129,63 @@ public sealed class SessionDefinition
     public Guid? GroupId { get; set; }
     public SessionSettings? Settings { get; set; }
 
-    /// <summary>Returns a deep copy with a fresh <see cref="Id"/>.</summary>
+    /// <summary>
+    /// <see cref="Material.Icons.MaterialIconKind"/> enum member name
+    /// (e.g. <c>"Earth"</c>). <c>null</c> means use the kind default.
+    /// </summary>
+    public string? IconKind { get; set; }
+
+    /// <summary>
+    /// Hex colour string (e.g. <c>"#6FA8DC"</c>) to tint the session icon.
+    /// <c>null</c> means use the theme default (white/light grey).
+    /// </summary>
+    public string? IconColor { get; set; }
+
+    /// <summary>
+    /// Returns a shallow clone keeping the same name and settings reference.
+    /// Used for Cut/Copy so that the name is not modified until Paste.
+    /// </summary>
+    public SessionDefinition Clone() => new()
+    {
+        Id       = Guid.NewGuid(),
+        Name     = Name,
+        Kind     = Kind,
+        GroupId  = GroupId,
+        Settings = Settings,
+        IconKind  = IconKind,
+        IconColor = IconColor,
+    };
+
+    /// <summary>
+    /// Returns a copy with a unique name suffix. If the name already ends in
+    /// <c>" (copy)"</c> or <c>" (copy N)"</c> the counter is incremented instead
+    /// of appending another <c>" (copy)"</c>.
+    /// </summary>
     public SessionDefinition Duplicate()
     {
+        var baseName = DeriveCopyBaseName(Name, out int next);
+        var newName  = next == 1 ? $"{baseName} (copy)" : $"{baseName} (copy {next})";
         return new SessionDefinition
         {
-            Id = Guid.NewGuid(),
-            Name = Name + " (copy)",
-            Kind = Kind,
-            GroupId = GroupId,
+            Id       = Guid.NewGuid(),
+            Name     = newName,
+            Kind     = Kind,
+            GroupId  = GroupId,
             Settings = Settings,
+            IconKind  = IconKind,
+            IconColor = IconColor,
         };
+    }
+
+    // Strips any existing " (copy)" / " (copy N)" suffix and returns the next counter value.
+    private static readonly Regex CopySuffixRegex =
+        new(@"^(.*?) \(copy(?: (\d+))?\)$", RegexOptions.RightToLeft | RegexOptions.Compiled);
+
+    private static string DeriveCopyBaseName(string name, out int nextCounter)
+    {
+        var m = CopySuffixRegex.Match(name);
+        if (!m.Success) { nextCounter = 1; return name; }
+        nextCounter = m.Groups[2].Success ? int.Parse(m.Groups[2].Value) + 1 : 2;
+        return m.Groups[1].Value;
     }
 }

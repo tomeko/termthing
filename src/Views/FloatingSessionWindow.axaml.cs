@@ -6,6 +6,8 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Material.Icons;
+using Material.Icons.Avalonia;
 using TermThing.Configuration;
 
 namespace TermThing.Views;
@@ -24,6 +26,8 @@ public partial class FloatingSessionWindow : Window
         Panel sessionHost,
         Control? sftpPanel,
         TextBlock titleSource,
+        MaterialIconKind iconKind,
+        IBrush iconBrush,
         Action dockBackCallback,
         Func<Task> closeCallback)
     {
@@ -32,6 +36,11 @@ public partial class FloatingSessionWindow : Window
         _dockBackCallback = dockBackCallback;
         _closeCallback = closeCallback;
         _titleSource = titleSource;
+
+        // Set toolbar icon.
+        var titleIcon = this.FindControl<MaterialIcon>("TitleIcon")!;
+        titleIcon.Kind       = iconKind;
+        titleIcon.Foreground = iconBrush;
 
         // Sync window title and toolbar label from the session's title block.
         Title = titleSource.Text;

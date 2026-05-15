@@ -1,0 +1,46 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.IconPickerDialog"
+        Title="Choose Icon"
+        Width="560"
+        SizeToContent="Height"
+        MinHeight="460"
+        MaxHeight="620"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner">
+
+    <DockPanel Margin="14" LastChildFill="True">
+
+        <!-- Bottom action buttons -->
+        <StackPanel DockPanel.Dock="Bottom"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="8"
+                    Margin="0,12,0,0">
+            <Button x:Name="ClearBtn" Content="Clear Icon" />
+            <Button x:Name="CancelBtn" Content="Cancel" IsCancel="True" />
+            <Button x:Name="OkBtn" Content="OK" IsDefault="True" />
+        </StackPanel>
+
+        <!-- Color picker section -->
+        <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <TextBlock Text="Color" FontWeight="SemiBold" Margin="0,0,0,6" />
+            <WrapPanel x:Name="ColorPanel" />
+        </StackPanel>
+
+        <Separator DockPanel.Dock="Bottom" Margin="0,10,0,2" />
+
+        <!-- Search box -->
+        <TextBox x:Name="SearchBox"
+                 DockPanel.Dock="Top"
+                 Watermark="Search icons…"
+                 Margin="0,0,0,8" />
+
+        <!-- Icon grid -->
+        <ScrollViewer Height="270" HorizontalScrollBarVisibility="Disabled">
+            <WrapPanel x:Name="IconWrap" />
+        </ScrollViewer>
+
+    </DockPanel>
+
+</Window>

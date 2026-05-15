@@ -4,6 +4,7 @@ using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.VisualTree;
 using System.Linq;
+using Material.Icons;
 using TermThing.Sessions;
 using Avalonia;
 
@@ -63,12 +64,19 @@ public partial class SessionTreeView : UserControl
     private TreeView _tree = null!;
 
     // Context menu items whose enabled state depends on what is selected
-    private readonly MenuItem _mnuRename;
-    private readonly MenuItem _mnuDuplicate;
-    private readonly MenuItem _mnuCut;
-    private readonly MenuItem _mnuCopy;
-    private readonly MenuItem _mnuPaste;
-    private readonly MenuItem _mnuDelete;
+    private readonly MenuItem  _mnuEdit;
+    private readonly MenuItem  _mnuRename;
+    private readonly MenuItem  _mnuDuplicate;
+    private readonly MenuItem  _mnuCut;
+    private readonly MenuItem  _mnuCopy;
+    private readonly MenuItem  _mnuPaste;
+    private readonly MenuItem  _mnuDelete;
+    // Multi-select items (hidden in single-select mode)
+    private readonly MenuItem  _mnuMoveToGroup;
+    private readonly MenuItem  _mnuBulkDelete;
+    private readonly Separator _mnuSepEditClipboard;
+    private readonly Separator _mnuSepDelete;
+    private readonly MenuItem  _mnuIconChange;
 
     // The root group to display (set by MainWindow after loading config)
     public SessionGroup? RootGroup { get; private set; }
@@ -109,29 +117,45 @@ public partial class SessionTreeView : UserControl
         _mnuPaste     = new MenuItem { Header = "Paste"     }; _mnuPaste.Click     += OnPasteClicked;
         _mnuDelete    = new MenuItem { Header = "Delete"    }; _mnuDelete.Click    += OnDeleteClicked;
 
-        var mnuEdit = new MenuItem { Header = "Edit…" };
-        mnuEdit.Click += OnEditClicked;
+        _mnuEdit = new MenuItem { Header = "Edit…" };
+        _mnuEdit.Click += OnEditClicked;
+
+        _mnuIconChange = new MenuItem { Header = "Change Icon…" };
+        _mnuIconChange.Click += OnChangeIconClicked;
+
+        _mnuMoveToGroup = new MenuItem { Header = "Move to group", IsVisible = false };
+        _mnuBulkDelete  = new MenuItem { Header = "Delete selected", IsVisible = false };
+        _mnuBulkDelete.Click += OnBulkDeleteClicked;
+
+        _mnuSepEditClipboard = new Separator();
+        _mnuSepDelete        = new Separator();
 
         var menu = new ContextMenu();
         menu.Opening += OnContextMenuOpening;
         menu.Items.Add(mnuNewSession);
         menu.Items.Add(mnuNewSubgroup);
         menu.Items.Add(new Separator());
-        menu.Items.Add(mnuEdit);
+        menu.Items.Add(_mnuEdit);
+        menu.Items.Add(_mnuIconChange);
         menu.Items.Add(_mnuRename);
         menu.Items.Add(_mnuDuplicate);
-        menu.Items.Add(new Separator());
+        menu.Items.Add(_mnuSepEditClipboard);
         menu.Items.Add(_mnuCut);
         menu.Items.Add(_mnuCopy);
         menu.Items.Add(_mnuPaste);
-        menu.Items.Add(new Separator());
+        menu.Items.Add(_mnuSepDelete);
         menu.Items.Add(_mnuDelete);
+        menu.Items.Add(_mnuMoveToGroup);
+        menu.Items.Add(_mnuBulkDelete);
 
         _tree.ContextMenu = menu;
 
         // Right-click should select the item under the cursor before the
         // context menu opens (Avalonia only selects on left-click by default).
         _tree.AddHandler(PointerPressedEvent, OnTreePointerPressed, RoutingStrategies.Tunnel);
+
+        // Delete key shortcut
+        _tree.KeyDown += OnTreeKeyDown;
     }
 
     public void SetRoot(SessionGroup root)
@@ -153,7 +177,16 @@ public partial class SessionTreeView : UserControl
             // Walk up from the event source to find the nearest TreeViewItem so
             // that SelectedItem is correct when OnContextMenuOpening fires.
             var tvi = (e.Source as Control)?.FindAncestorOfType<TreeViewItem>();
-            _tree.SelectedItem = tvi?.DataContext;
+            if (tvi?.DataContext is SessionTreeNode clickedNode)
+            {
+                // Preserve multi-selection when right-clicking an already-selected item.
+                if (_tree.SelectedItems?.Contains(clickedNode) != true)
+                    _tree.SelectedItem = clickedNode;
+            }
+            else
+            {
+                _tree.SelectedItem = null;
+            }
         }
 
         if (props.IsLeftButtonPressed)
@@ -175,23 +208,123 @@ public partial class SessionTreeView : UserControl
 
     private void OnContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        var node     = _tree.SelectedItem as SessionTreeNode;
-        bool hasAny  = node is not null;
-        bool isSess  = node?.IsSession == true;
-        bool canDel  = hasAny && (isSess || (node!.Tag is SessionGroup g && g != RootGroup));
+        var selectedSessions = GetSelectedSessions();
+        bool multi = selectedSessions.Count > 1;
 
-        _mnuRename.IsEnabled    = hasAny;
-        _mnuDuplicate.IsEnabled = isSess;
-        _mnuCut.IsEnabled       = isSess;
-        _mnuCopy.IsEnabled      = isSess;
-        _mnuPaste.IsEnabled     = _clipboard is not null;
-        _mnuDelete.IsEnabled    = canDel;
+        // Toggle between single-select and multi-select menu layouts.
+        _mnuEdit.IsVisible              = !multi;
+        _mnuIconChange.IsVisible        = !multi;
+        _mnuRename.IsVisible            = !multi;
+        _mnuDuplicate.IsVisible         = !multi;
+        _mnuSepEditClipboard.IsVisible  = !multi;
+        _mnuCut.IsVisible               = !multi;
+        _mnuCopy.IsVisible              = !multi;
+        _mnuPaste.IsVisible             = !multi;
+        _mnuDelete.IsVisible            = !multi;
+        _mnuMoveToGroup.IsVisible       = multi;
+        _mnuBulkDelete.IsVisible        = multi;
+
+        if (multi)
+        {
+            _mnuBulkDelete.Header = $"Delete {selectedSessions.Count} sessions…";
+            _mnuMoveToGroup.Items.Clear();
+            PopulateGroupSubmenu(_mnuMoveToGroup, RootGroup!, selectedSessions, 0);
+        }
+        else
+        {
+            var node    = _tree.SelectedItem as SessionTreeNode;
+            bool hasAny = node is not null;
+            bool isSess = node?.IsSession == true;
+            bool canDel = hasAny && (isSess || (node!.Tag is SessionGroup g && g != RootGroup));
+
+            _mnuRename.IsEnabled    = hasAny;
+            _mnuIconChange.IsEnabled = isSess;
+            _mnuDuplicate.IsEnabled = isSess;
+            _mnuCut.IsEnabled       = isSess;
+            _mnuCopy.IsEnabled      = isSess;
+            _mnuPaste.IsEnabled     = _clipboard is not null;
+            _mnuDelete.IsEnabled    = canDel;
+        }
     }
 
     private void OnTreeDoubleTapped(object? sender, TappedEventArgs e)
     {
         if (_tree.SelectedItem is SessionTreeNode { Tag: SessionDefinition def })
             SessionLaunchRequested?.Invoke(this, def);
+    }
+
+    private async void OnTreeKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Delete) return;
+        e.Handled = true;
+
+        var sessions = GetSelectedSessions();
+        if (sessions.Count > 1)
+        {
+            await DeleteSessionsAsync(sessions);
+        }
+        else if (_tree.SelectedItem is SessionTreeNode node)
+        {
+            if (!await ConfirmDeleteAsync(node.Header)) return;
+            switch (node.Tag)
+            {
+                case SessionDefinition def: RemoveSession(def, RootGroup!); break;
+                case SessionGroup grp when grp != RootGroup: RemoveGroup(grp, RootGroup!); break;
+                default: return;
+            }
+            RebuildTree();
+            TreeChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-select helpers
+    // -----------------------------------------------------------------------
+
+    private List<SessionDefinition> GetSelectedSessions() =>
+        _tree.SelectedItems?
+            .OfType<SessionTreeNode>()
+            .Where(n => n.IsSession)
+            .Select(n => (SessionDefinition)n.Tag)
+            .ToList() ?? [];
+
+    private void PopulateGroupSubmenu(MenuItem parent, SessionGroup group,
+        List<SessionDefinition> sessions, int depth)
+    {
+        var indent = depth > 0 ? new string('\u00a0', depth * 3) : string.Empty;
+        var item = new MenuItem { Header = $"{indent}{group.Name}" };
+        item.Click += (_, _) => MoveSessionsToGroup(sessions, group);
+        parent.Items.Add(item);
+        foreach (var sub in group.Subgroups)
+            PopulateGroupSubmenu(parent, sub, sessions, depth + 1);
+    }
+
+    private void MoveSessionsToGroup(List<SessionDefinition> sessions, SessionGroup target)
+    {
+        foreach (var def in sessions)
+        {
+            RemoveSession(def, RootGroup!);
+            def.GroupId = target.Id;
+            target.Sessions.Add(def);
+        }
+        RebuildTree();
+        TreeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private async void OnBulkDeleteClicked(object? sender, RoutedEventArgs e)
+    {
+        var sessions = GetSelectedSessions();
+        if (sessions.Count == 0) return;
+        await DeleteSessionsAsync(sessions);
+    }
+
+    private async Task DeleteSessionsAsync(List<SessionDefinition> sessions)
+    {
+        if (!await ConfirmDeleteAsync(sessions.Count)) return;
+        foreach (var def in sessions)
+            RemoveSession(def, RootGroup!);
+        RebuildTree();
+        TreeChanged?.Invoke(this, EventArgs.Empty);
     }
 
     // -----------------------------------------------------------------------
@@ -330,7 +463,7 @@ public partial class SessionTreeView : UserControl
     {
         if (_tree.SelectedItem is SessionTreeNode { Tag: SessionDefinition def })
         {
-            _clipboard = def.Duplicate();
+            _clipboard = def.Clone();
             _isCut = false;
         }
     }
@@ -340,18 +473,20 @@ public partial class SessionTreeView : UserControl
         if (_clipboard is null) return;
         var target = SelectedGroup() ?? RootGroup!;
 
+        SessionDefinition toAdd;
         if (_isCut)
         {
             RemoveSession(_clipboard, RootGroup!);
+            toAdd  = _clipboard;
             _isCut = false;
         }
         else
         {
-            _clipboard = _clipboard.Duplicate();
+            toAdd = _clipboard.Duplicate();
         }
 
-        _clipboard.GroupId = target.Id;
-        target.Sessions.Add(_clipboard);
+        toAdd.GroupId = target.Id;
+        target.Sessions.Add(toAdd);
         _clipboard = null;
         RebuildTree();
         TreeChanged?.Invoke(this, EventArgs.Empty);
@@ -369,6 +504,20 @@ public partial class SessionTreeView : UserControl
             OnRenameClicked(sender, e!);
     }
 
+    private async void OnChangeIconClicked(object? sender, RoutedEventArgs e)
+    {
+        if (_tree.SelectedItem is not SessionTreeNode { Tag: SessionDefinition def }) return;
+
+        var dialog = new IconPickerDialog(def.IconKind, def.IconColor);
+        await dialog.ShowDialog(TopLevel.GetTopLevel(this) as Window);
+
+        def.IconKind  = dialog.ResultKind;
+        def.IconColor = dialog.ResultColor;
+
+        RebuildTree();
+        TreeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     private void RebuildTree()
     {
         if (RootGroup is null) return;
@@ -384,24 +533,57 @@ public partial class SessionTreeView : UserControl
 
         var node = new SessionTreeNode
         {
-            Header     = group.Name,
-            Tag        = group,
-            IsExpanded = expanded,
+            Header       = group.Name,
+            Tag          = group,
+            IsExpanded   = expanded,
+            ChildCount   = CountSessions(group),
+            IconKindEnum = MaterialIconKind.Folder,
+            IconBrush    = new SolidColorBrush(Color.Parse("#BDBDBD")),
         };
         foreach (var sub in group.Subgroups)
             node.Children.Add(WrapGroup(sub));
         foreach (var s in group.Sessions)
-            node.Children.Add(new SessionTreeNode { Header = $"{KindIcon(s.Kind)} {s.Name}", Tag = s });
+            node.Children.Add(new SessionTreeNode
+            {
+                Header       = s.Name,
+                Tag          = s,
+                IconKindEnum = ResolveIconKind(s),
+                IconBrush    = ParseIconBrush(s.IconColor),
+            });
         return node;
     }
 
-    private static string KindIcon(SessionKind k) => k switch
+    /// <summary>Recursively counts all sessions under <paramref name="group"/>.</summary>
+    private static int CountSessions(SessionGroup group)
     {
-        SessionKind.Local  => "🖥",
-        SessionKind.Ssh    => "🌐",
-        SessionKind.Serial => "🔌",
-        _                  => "•",
-    };
+        int count = group.Sessions.Count;
+        foreach (var sub in group.Subgroups)
+            count += CountSessions(sub);
+        return count;
+    }
+
+    private static MaterialIconKind ResolveIconKind(SessionDefinition s)
+    {
+        if (s.IconKind is not null && Enum.TryParse<MaterialIconKind>(s.IconKind, out var custom))
+            return custom;
+        return s.Kind switch
+        {
+            SessionKind.Local  => MaterialIconKind.Monitor,
+            SessionKind.Ssh    => MaterialIconKind.Server,
+            SessionKind.Serial => MaterialIconKind.Usb,
+            _                  => MaterialIconKind.HelpCircleOutline,
+        };
+    }
+
+    private static IBrush ParseIconBrush(string? hex)
+    {
+        if (hex is not null)
+        {
+            try { return new SolidColorBrush(Color.Parse(hex)); }
+            catch { }
+        }
+        return new SolidColorBrush(Color.Parse("#BDBDBD"));
+    }
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -440,8 +622,16 @@ public partial class SessionTreeView : UserControl
         return false;
     }
 
-    private async Task<bool> ConfirmDeleteAsync(string name)
+    private Task<bool> ConfirmDeleteAsync(string name) =>
+        ShowConfirmDeleteDialogAsync($"Delete '{name}'?");
+
+    private Task<bool> ConfirmDeleteAsync(int count) =>
+        ShowConfirmDeleteDialogAsync($"Delete {count} session{(count == 1 ? "" : "s")}?");
+
+    private async Task<bool> ShowConfirmDeleteDialogAsync(string message)
     {
+        var deleteBtn = new Button { Content = "Delete", IsDefault = true };
+        var cancelBtn = new Button { Content = "Cancel", IsCancel = true };
         var win = new Window
         {
             Title = "Confirm Delete",
@@ -455,24 +645,17 @@ public partial class SessionTreeView : UserControl
                 Spacing = 12,
                 Children =
                 {
-                    new TextBlock { Text = $"Delete '{name}'?", TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                    new TextBlock { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
                     new StackPanel
                     {
                         Orientation         = Avalonia.Layout.Orientation.Horizontal,
                         HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
                         Spacing = 8,
-                        Children =
-                        {
-                            new Button { Content = "Delete" },
-                            new Button { Content = "Cancel" },
-                        }
+                        Children = { deleteBtn, cancelBtn },
                     }
                 }
             }
         };
-        var buttons   = (StackPanel)((StackPanel)win.Content!).Children[1];
-        var deleteBtn = (Button)buttons.Children[0];
-        var cancelBtn = (Button)buttons.Children[1];
         var tcs = new TaskCompletionSource<bool>();
         deleteBtn.Click += (_, _) => { tcs.TrySetResult(true);  win.Close(); };
         cancelBtn.Click += (_, _) => { tcs.TrySetResult(false); win.Close(); };

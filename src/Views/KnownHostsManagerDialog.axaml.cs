@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using System.Collections.ObjectModel;
 using TermThing.Ssh;
+using TermThing.Views.Behaviors;
 
 namespace TermThing.Views;
 
@@ -16,6 +17,7 @@ public partial class KnownHostsManagerDialog : Window
         InitializeComponent();
         Refresh();
         EntriesGrid.ItemsSource = Entries;
+        DataGridExt.SetDeselectOnEmptyClick(EntriesGrid, true);
     }
 
     private void Refresh()
