@@ -7,8 +7,11 @@ using Avalonia.Threading;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.VisualTree;
+using Avalonia.Collections;
 using Renci.SshNet;
 using TermThing.Sessions;
+using System.Collections;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -179,6 +182,9 @@ public partial class SftpFileBrowserView : UserControl
     private bool _bookmarksExpanded;
 
     public ObservableCollection<SftpEntry> Entries { get; } = new();
+    private DataGridCollectionView? _entriesView;
+    private DataGridColumn? _sortColumn;
+    private ListSortDirection _sortDir;
     public string CurrentPath => _currentPath;
     public bool FollowLocation => _followLocationCheckBox?.IsChecked == true;
 
@@ -224,7 +230,9 @@ public partial class SftpFileBrowserView : UserControl
         _bookmarksArrow      = this.FindControl<TextBlock>("BookmarksArrow")!;
         _bookmarksHeaderText = this.FindControl<TextBlock>("BookmarksHeaderText")!;
 
-        _filesGrid.ItemsSource = Entries;
+        _entriesView = new DataGridCollectionView(Entries);
+        _filesGrid.ItemsSource = _entriesView;
+        _filesGrid.Sorting += OnGridSorting;
 
         // Wire transfer queue to the progress overlay
         _transferQueue = new TransferQueue(_sftpClient);
@@ -485,6 +493,12 @@ public partial class SftpFileBrowserView : UserControl
 
     private void OnFilesGridDoubleTapped(object? sender, TappedEventArgs e)
     {
+        // Only act on a double-tap that actually landed on a data row — rejects
+        // column headers, the scrollbar and empty space in one check.
+        if (e.Source is not Visual src ||
+            !src.GetSelfAndVisualAncestors().OfType<DataGridRow>().Any())
+            return;
+
         if (_filesGrid.SelectedItem is not SftpEntry entry) return;
 
         if (entry.IsDirectory)
@@ -495,6 +509,96 @@ public partial class SftpFileBrowserView : UserControl
         {
             // Open file using the registered app or prompt the user
             _ = OpenEntryAsync(entry);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Column sorting — folders stay grouped above files and ".." stays pinned,
+    // the clicked column orders within each group.
+    // -----------------------------------------------------------------------
+
+    // Avalonia's DataGrid only renders the header sort arrow when the column's
+    // CustomSortComparer instance is reference-equal to a
+    // DataGridComparerSortDescription.SourceComparer in the view's
+    // SortDescriptions (DataGridColumn.GetSortDescription). It has no public
+    // SortDirection setter. So: handle Sorting ourselves, point the column's
+    // CustomSortComparer at our comparer, and feed the view a custom
+    // DataGridComparerSortDescription subclass whose Comparer keeps folders
+    // grouped / ".." pinned WITHOUT the base class's blanket direction-negation
+    // (which would otherwise unpin/ungroup on descending) while still reporting
+    // Direction so the arrow points the right way.
+    private void OnGridSorting(object? sender, DataGridColumnEventArgs e)
+    {
+        e.Handled = true; // we drive the sort via the collection view ourselves
+        if (_entriesView == null) return;
+
+        _sortDir = _sortColumn == e.Column && _sortDir == ListSortDirection.Ascending
+            ? ListSortDirection.Descending
+            : ListSortDirection.Ascending;
+        _sortColumn = e.Column;
+
+        var comparer = new SftpEntryComparer(e.Column.Header as string, _sortDir);
+        e.Column.CustomSortComparer = comparer; // matched by reference for the arrow
+
+        _entriesView.SortDescriptions.Clear();
+        _entriesView.SortDescriptions.Add(new SftpSortDescription(comparer, _sortDir));
+    }
+
+    /// <summary>
+    /// A comparer-based sort description whose <see cref="Comparer"/> is our
+    /// direction-aware comparer verbatim — overriding the base behaviour that
+    /// negates the whole result for descending (which would drag files above
+    /// folders and unpin ".."). <see cref="Direction"/> is still reported so
+    /// the header arrow renders correctly.
+    /// </summary>
+    private sealed class SftpSortDescription : DataGridComparerSortDescription
+    {
+        private readonly SftpEntryComparer _comparer;
+
+        public SftpSortDescription(SftpEntryComparer comparer, ListSortDirection direction)
+            : base(comparer, direction) => _comparer = comparer;
+
+        public override IComparer<object> Comparer => _comparer;
+
+        public override DataGridSortDescription SwitchSortDirection() =>
+            new SftpSortDescription(
+                new SftpEntryComparer(_comparer.Key,
+                    Direction == ListSortDirection.Ascending
+                        ? ListSortDirection.Descending
+                        : ListSortDirection.Ascending),
+                Direction == ListSortDirection.Ascending
+                    ? ListSortDirection.Descending
+                    : ListSortDirection.Ascending);
+    }
+
+    private sealed class SftpEntryComparer : IComparer, IComparer<object>
+    {
+        public string? Key { get; }
+        private readonly int _dir;
+
+        public SftpEntryComparer(string? key, ListSortDirection d)
+        {
+            Key  = key;
+            _dir = d == ListSortDirection.Descending ? -1 : 1;
+        }
+
+        public int Compare(object? a, object? b)
+        {
+            var x = (SftpEntry)a!;
+            var y = (SftpEntry)b!;
+            if (x.IsParentLink != y.IsParentLink) return x.IsParentLink ? -1 : 1; // ".." pinned
+            if (x.IsDirectory  != y.IsDirectory)  return x.IsDirectory  ? -1 : 1; // dirs first
+
+            int c = Key switch
+            {
+                "Size"        => x.Size.CompareTo(y.Size),
+                "Modified"    => Nullable.Compare(x.Modified, y.Modified),
+                "Permissions" => string.Compare(x.Permissions, y.Permissions, StringComparison.Ordinal),
+                "Owner"       => x.OwnerId.CompareTo(y.OwnerId),
+                "Group"       => x.GroupId.CompareTo(y.GroupId),
+                _             => string.Compare(x.Name, y.Name, StringComparison.OrdinalIgnoreCase),
+            };
+            return c * _dir;
         }
     }
 

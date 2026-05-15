@@ -79,6 +79,7 @@
                   IsReadOnly="True"
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column"
+                  HorizontalScrollBarVisibility="Auto"
                   FontSize="12"
                   LoadingRow="OnFilesGridLoadingRow"
                   DoubleTapped="OnFilesGridDoubleTapped">
@@ -118,8 +119,6 @@
                                     Width="84" MinWidth="40" FontFamily="Cascadia Code,Consolas,monospace"/>
                 <DataGridTextColumn Header="Owner" Binding="{Binding OwnerDisplay}" Width="50" MinWidth="30"/>
                 <DataGridTextColumn Header="Group" Binding="{Binding GroupDisplay}" Width="50" MinWidth="30"/>
-                <!-- Filler: absorbs leftover space so all preceding columns have a resize handle -->
-                <DataGridTextColumn Header="" Width="*" CanUserSort="False" CanUserResize="False" IsReadOnly="True"/>
             </DataGrid.Columns>
         </DataGrid>
 

@@ -47,7 +47,12 @@
         </Grid>
 
         <!-- Body: left pane | splitter | terminal tabs -->
-        <Grid x:Name="MainBodyGrid" ColumnDefinitions="260,4,*">
+        <Grid x:Name="MainBodyGrid">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="260" MinWidth="180"/>
+                <ColumnDefinition Width="4"/>
+                <ColumnDefinition Width="*" MinWidth="320"/>
+            </Grid.ColumnDefinitions>
 
             <!-- Left pane: Sessions tree / SFTP browser -->
             <TabControl Grid.Column="0"
