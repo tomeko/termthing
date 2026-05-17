@@ -78,15 +78,15 @@ jobs:
           mkdir -p pkg/termthing
           cp -r "publish/${{ matrix.rid }}/." pkg/termthing/
 
-      # Upload the raw staged directory — no zip here.
-      # GitHub wraps artifacts in a zip on download anyway, and naming the
-      # artifact with the version means that wrapper zip has the right name.
-      # The release job creates the final versioned zips from these artifacts.
+      # Upload pkg/ (not pkg/termthing/) so the artifact stores termthing/<files>.
+      # upload-artifact strips the common path prefix (pkg/), preserving the
+      # termthing/ directory structure.  GitHub's artifact download wrapper then
+      # produces one zip: TermThing-<ver>-<rid>.zip → termthing/<exe>.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: TermThing-${{ steps.ver.outputs.version }}-${{ matrix.rid }}
-          path: pkg/termthing/
+          path: pkg/
 
   release:
     needs: build
@@ -108,10 +108,11 @@ jobs:
           for artifact_dir in dist/TermThing-*; do
             artifact_name=$(basename "$artifact_dir")   # e.g. TermThing-0.1.0-win-x64
             zipname="${artifact_name}.zip"
-            # Create zip with termthing/ as the top-level folder
-            (cd "$artifact_dir" && zip -r "../../out/${zipname}" .)
-            # Append sha256 line with just the filename (no path prefix)
-            (cd out && sha256sum "${zipname}") >> out/SHA256SUMS.txt
+            # artifact_dir contains termthing/ as the top-level directory
+            (cd "$artifact_dir" && zip -r "../../out/${zipname}" termthing)
+            # Individual sidecar (e.g. TermThing-0.1.0-win-x64.zip.sha256)
+            (cd out && sha256sum "${zipname}" > "${zipname}.sha256")
+            cat "out/${zipname}.sha256" >> out/SHA256SUMS.txt
           done
           sort -o out/SHA256SUMS.txt out/SHA256SUMS.txt
           echo "--- Release artifacts ---"
