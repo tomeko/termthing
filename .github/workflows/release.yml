@@ -72,45 +72,21 @@ jobs:
             -p:AssemblyInformationalVersion=${{ steps.ver.outputs.version }} \
             -o publish/${{ matrix.rid }}
 
-      - name: Package (zip, Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ver  = "${{ steps.ver.outputs.version }}"
-          $rid  = "${{ matrix.rid }}"
-          $name = "TermThing-${ver}-${rid}.zip"
-          # Stage into a 'termthing' subfolder so the zip extracts to a single folder
-          New-Item -ItemType Directory -Force -Path "pkg/termthing" | Out-Null
-          Copy-Item "publish/$rid/*" -Destination "pkg/termthing/" -Recurse
-          Compress-Archive -Path "pkg/termthing" -DestinationPath $name
-          $hash = (Get-FileHash $name -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name" | Out-File -Encoding ascii "$name.sha256"
-
-      - name: Package (zip, Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Stage into termthing/ folder
         shell: bash
         run: |
-          ver="${{ steps.ver.outputs.version }}"
-          rid="${{ matrix.rid }}"
-          name="TermThing-${ver}-${rid}.zip"
-          # Stage into a 'termthing' subfolder so the zip extracts to a single folder
           mkdir -p pkg/termthing
-          cp -r "publish/${rid}/." pkg/termthing/
-          (cd pkg && zip -r "../${name}" termthing)
-          sha256sum "${name}" > "${name}.sha256" 2>/dev/null || \
-            shasum -a 256 "${name}" > "${name}.sha256"
+          cp -r "publish/${{ matrix.rid }}/." pkg/termthing/
 
-      - name: Upload zip artifact
+      # Upload the raw staged directory — no zip here.
+      # GitHub wraps artifacts in a zip on download anyway, and naming the
+      # artifact with the version means that wrapper zip has the right name.
+      # The release job creates the final versioned zips from these artifacts.
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TermThing-${{ matrix.rid }}
-          path: TermThing-*.zip
-
-      - name: Upload sha256 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: TermThing-${{ matrix.rid }}-sha256
-          path: TermThing-*.sha256
+          name: TermThing-${{ steps.ver.outputs.version }}-${{ matrix.rid }}
+          path: pkg/termthing/
 
   release:
     needs: build
@@ -119,18 +95,26 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
+      # Each artifact lands in its own subdirectory named after the artifact.
+      # Directory layout after download:
+      #   dist/TermThing-<ver>-<rid>/   ← one dir per platform
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          merge-multiple: true
 
-      - name: Assemble SHA256SUMS.txt
+      - name: Package zips and build SHA256SUMS.txt
         run: |
           mkdir -p out
-          # Merge all per-file sha256 sidecars into one canonical file
-          find dist -name '*.sha256' -exec cat {} + | sort > out/SHA256SUMS.txt
-          find dist -type f -name '*.zip' -exec cp {} out/ \;
-          echo "--- Artifacts ---"
+          for artifact_dir in dist/TermThing-*; do
+            artifact_name=$(basename "$artifact_dir")   # e.g. TermThing-0.1.0-win-x64
+            zipname="${artifact_name}.zip"
+            # Create zip with termthing/ as the top-level folder
+            (cd "$artifact_dir" && zip -r "../../out/${zipname}" .)
+            # Append sha256 line with just the filename (no path prefix)
+            (cd out && sha256sum "${zipname}") >> out/SHA256SUMS.txt
+          done
+          sort -o out/SHA256SUMS.txt out/SHA256SUMS.txt
+          echo "--- Release artifacts ---"
           ls -lh out
 
       - uses: softprops/action-gh-release@v2
