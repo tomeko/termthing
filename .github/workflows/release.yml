@@ -72,23 +72,27 @@ jobs:
             -p:AssemblyInformationalVersion=${{ steps.ver.outputs.version }} \
             -o publish/${{ matrix.rid }}
 
-      - name: Package (zip)
+      - name: Package (zip, Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ver  = "${{ steps.ver.outputs.version }}"
+          $rid  = "${{ matrix.rid }}"
+          $name = "TermThing-${ver}-${rid}.zip"
+          Compress-Archive -Path "publish/$rid/*" -DestinationPath $name
+          $hash = (Get-FileHash $name -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -Encoding ascii "$name.sha256"
+
+      - name: Package (zip, Linux/macOS)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           ver="${{ steps.ver.outputs.version }}"
           rid="${{ matrix.rid }}"
           name="TermThing-${ver}-${rid}.zip"
-
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            # PowerShell is available on windows-latest
-            powershell -Command "Compress-Archive -Path 'publish/${rid}/*' -DestinationPath '${name}'"
-            powershell -Command "(Get-FileHash '${name}' -Algorithm SHA256).Hash.ToLower() + '  ${name}'" | \
-              Out-File -Encoding ascii "${name}.sha256"
-          else
-            (cd publish/${rid} && zip -r "../../${name}" .)
-            sha256sum "${name}" > "${name}.sha256" 2>/dev/null || \
-              shasum -a 256 "${name}" > "${name}.sha256"
-          fi
+          (cd publish/${rid} && zip -r "../../${name}" .)
+          sha256sum "${name}" > "${name}.sha256" 2>/dev/null || \
+            shasum -a 256 "${name}" > "${name}.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
