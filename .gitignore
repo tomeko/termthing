@@ -1,4 +1,6 @@
 nul
+.vscode/
 doc/
 AGENTS.md
 CLAUDE.md
+.claude/
