@@ -9,6 +9,9 @@
     <IsPackable>false</IsPackable>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
     <ApplicationIcon>Assets\tt_ico2.ico</ApplicationIcon>
+    <!-- Default version for dev builds; CI overrides via -p:Version and -p:AssemblyInformationalVersion -->
+    <Version>0.0.0-dev</Version>
+    <AssemblyInformationalVersion>0.0.0-dev</AssemblyInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

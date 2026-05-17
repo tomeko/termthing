@@ -41,6 +41,8 @@
                         <MenuItem Header="Manage known hosts…" Click="OnManageKnownHostsClicked"/>
                         <Separator/>
                         <MenuItem Header="Settings…"           Click="OnSettingsClicked"/>
+                        <Separator/>
+                        <MenuItem Header="Check for updates…"  Click="OnCheckForUpdatesClicked"/>
                     </MenuFlyout>
                 </Button.Flyout>
             </Button>

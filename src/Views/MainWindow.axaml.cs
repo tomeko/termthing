@@ -19,6 +19,7 @@ using TermThing.Editor;
 using TermThing.Sessions;
 using TermThing.Sessions.Launchers;
 using TermThing.Ssh;
+using TermThing.Updater;
 
 namespace TermThing.Views;
 
@@ -136,6 +137,9 @@ public partial class MainWindow : Window, ISessionPromptHost
         // Always open on Sessions tab (index 0) regardless of last-used tab
         if (LeftTabs != null)
             LeftTabs.SelectedIndex = 0;
+
+        // Schedule the background update check ~10 s after the window opens
+        ScheduleAutoUpdateCheck();
     }
 
     // -----------------------------------------------------------------------
@@ -1461,5 +1465,100 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         if (!string.IsNullOrEmpty(current)) args.Add(current);
         return args;
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-updater
+    // -----------------------------------------------------------------------
+
+    private void ScheduleAutoUpdateCheck()
+    {
+        // Only auto-check when the feature is enabled
+        if (!SettingsService.App.AutoCheckForUpdates) return;
+
+        // Skip dev builds (VersionHelper returns null for 0.0.0-dev)
+        if (VersionHelper.CurrentVersion() is null) return;
+
+        var last = SettingsService.Temp.LastUpdateCheck;
+        if (last.HasValue && (DateTimeOffset.UtcNow - last.Value) < TimeSpan.FromHours(24)) return;
+
+        // Run ~10 s after the window opens so startup feels instant
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(10));
+            var info = await UpdateService.CheckAsync();
+
+            // Record that we checked (even if no update was found)
+            SettingsService.Temp.LastUpdateCheck = DateTimeOffset.UtcNow;
+            SettingsService.SaveTemp();
+
+            if (info is null) return;
+
+            // Skip if the user previously dismissed this exact tag
+            if (SettingsService.Temp.SkippedUpdateTag == info.TagName) return;
+
+            Dispatcher.UIThread.Post(() => ShowUpdateDialog(info, manual: false));
+        });
+    }
+
+    private async void OnCheckForUpdatesClicked(object? sender, RoutedEventArgs e)
+    {
+        // Manual trigger always runs — ignore SkippedUpdateTag and the 24 h interval
+        if (VersionHelper.CurrentVersion() is null)
+        {
+            var box = new Window
+            {
+                Title = "Check for updates",
+                Width = 360,
+                CanResize = false,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                SizeToContent = SizeToContent.Height,
+                Content = new TextBlock
+                {
+                    Text = "Updates are not available in development builds.",
+                    Margin = new Thickness(20),
+                    TextWrapping = TextWrapping.Wrap,
+                },
+            };
+            await box.ShowDialog(this);
+            return;
+        }
+
+        var info = await Task.Run(() => UpdateService.CheckAsync());
+
+        SettingsService.Temp.LastUpdateCheck = DateTimeOffset.UtcNow;
+        SettingsService.SaveTemp();
+
+        if (info is null)
+        {
+            var box = new Window
+            {
+                Title = "Check for updates",
+                Width = 360,
+                CanResize = false,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                SizeToContent = SizeToContent.Height,
+                Content = new TextBlock
+                {
+                    Text = "TermThing is up to date.",
+                    Margin = new Thickness(20),
+                    TextWrapping = TextWrapping.Wrap,
+                },
+            };
+            await box.ShowDialog(this);
+            return;
+        }
+
+        ShowUpdateDialog(info, manual: true);
+    }
+
+    private void ShowUpdateDialog(UpdateInfo info, bool manual)
+    {
+        var dlg = new UpdateAvailableDialog(info, manual, () =>
+        {
+            // Called by the dialog after the swap script has been launched
+            Close();
+        });
+        dlg.Show(this);
     }
 }

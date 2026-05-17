@@ -101,4 +101,22 @@ public sealed class TempSettings
 
     /// <summary>Height (pixels) of the bookmarks body when expanded.</summary>
     public double BookmarksHeightPx { get; set; } = 160;
+
+    // -----------------------------------------------------------------------
+    // Auto-updater
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// UTC timestamp of the last successful update-check network call (regardless of
+    /// whether an update was found). Used to enforce the 24-hour polling interval.
+    /// <c>null</c> means no check has been performed yet in this installation.
+    /// </summary>
+    public DateTimeOffset? LastUpdateCheck { get; set; }
+
+    /// <summary>
+    /// Tag name of a release the user has explicitly skipped (e.g. <c>"v0.2.0"</c>).
+    /// Subsequent background checks silently ignore this exact tag.
+    /// The Help → Check for updates… manual trigger always runs regardless.
+    /// </summary>
+    public string? SkippedUpdateTag { get; set; }
 }

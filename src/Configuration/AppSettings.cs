@@ -34,6 +34,14 @@ public sealed class AppSettings
     public bool ConfirmExitWithOpenSessions { get; set; } = true;
 
     /// <summary>
+    /// When <c>true</c>, TermThing silently polls GitHub Releases in the background
+    /// (at most once every 24 hours) and shows an update prompt when a newer version
+    /// is available. Set to <c>false</c> to disable all automatic checks; the
+    /// Help → Check for updates… menu item always works regardless.
+    /// </summary>
+    public bool AutoCheckForUpdates { get; set; } = true;
+
+    /// <summary>
     /// One-shot migration: converts old <see cref="FileAssociations"/> entries into
     /// <see cref="Applications"/> entries and clears the source list.
     /// </summary>
