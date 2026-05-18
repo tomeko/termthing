@@ -1,6 +1,6 @@
 nul
 .vscode/
-doc/
+doc/internal
 AGENTS.md
 CLAUDE.md
 .claude/
