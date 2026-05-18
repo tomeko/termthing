@@ -110,9 +110,9 @@ jobs:
             zipname="${artifact_name}.zip"
             # artifact_dir contains termthing/ as the top-level directory
             (cd "$artifact_dir" && zip -r "../../out/${zipname}" termthing)
-            # Individual sidecar (e.g. TermThing-0.1.0-win-x64.zip.sha256)
-            (cd out && sha256sum "${zipname}" > "${zipname}.sha256")
-            cat "out/${zipname}.sha256" >> out/SHA256SUMS.txt
+            # Append this zip's hash to the combined checksum file.
+            # Users can verify with: sha256sum -c SHA256SUMS.txt
+            (cd out && sha256sum "${zipname}") >> out/SHA256SUMS.txt
           done
           sort -o out/SHA256SUMS.txt out/SHA256SUMS.txt
           echo "--- Release artifacts ---"
