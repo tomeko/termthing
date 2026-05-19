@@ -1,6 +1,8 @@
 # TermThing
 
-A cross-platform tabbed desktop-focused terminal application (inspired by MobaXTerm) for Windows, Linux, and macOS, built on .NET 10 and Avalonia. All configuration lives in a `config/` folder next to the executable, no installer, no registry entries, no per-user roaming data. Copy the folder anywhere and it works.
+Yet another terminal emulator thing. Desktop, portable, tab and floating window focused, SFTP baked-in terminal application (inspired by MobaXTerm) for Windows, Linux, and macOS, built on .NET 10 and Avalonia. 
+
+<img src="doc/images/tt_ss1.png" style="width=50%"/>
 
 > Early development, expect rough edges.
 
@@ -32,19 +34,6 @@ If you already cloned without `--recurse-submodules`:
 ```powershell
 git submodule update --init --recursive
 ```
-
-## Configuration
-
-All state is stored in `<exe>/config/`:
-
-| File | Contents |
-|---|---|
-| `termthing.json` | Saved sessions tree |
-| `appsettings.json` | User settings (file associations, recent session count) |
-| `tempsettings.json` | Auto-saved UI state (column widths, recent sessions, last session kind) |
-| `known_hosts.json` | SSH host-key trust store |
-
-Writes use a `*.tmp` + atomic rename pattern. A corrupted file falls back to defaults silently.
 
 ## Acknowledgements
 
