@@ -67,9 +67,18 @@ public sealed class SshSessionLauncher : ISessionLauncher
             }
             catch (Exception ex) when (ex is not OperationCanceledException { CancellationToken.IsCancellationRequested: false })
             {
-                await promptHost.ShowErrorAsync(
-                    "Host unreachable",
-                    $"Cannot reach {probeHost}:{probePort}.\n\n{ex.Message}");
+                var isDnsFailure = ex is System.Net.Sockets.SocketException se
+                    && (se.SocketErrorCode is System.Net.Sockets.SocketError.HostNotFound
+                                           or System.Net.Sockets.SocketError.NoData
+                                           or System.Net.Sockets.SocketError.TryAgain)
+                    && !System.Net.IPAddress.TryParse(probeHost, out _);
+
+                var detail = isDnsFailure
+                    ? $"Cannot reach {probeHost}:{probePort}.\n\nDNS resolution failed — the hostname '{probeHost}' could not be resolved. " +
+                      $"Check that the hostname is spelled correctly and that DNS is reachable from this machine.\n\n{ex.Message}"
+                    : $"Cannot reach {probeHost}:{probePort}.\n\n{ex.Message}";
+
+                await promptHost.ShowErrorAsync("Host unreachable", detail);
                 throw new OperationCanceledException("Host unreachable.");
             }
         }

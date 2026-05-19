@@ -21,7 +21,7 @@ public sealed class SessionGroup
     {
         var clone = new SessionGroup { Name = Name };
         foreach (var s in Sessions)
-            clone.Sessions.Add(s.Duplicate());
+            clone.Sessions.Add(s.Clone());
         foreach (var g in Subgroups)
             clone.Subgroups.Add(g.DeepClone());
         return clone;
