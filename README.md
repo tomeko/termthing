@@ -1,6 +1,6 @@
 # TermThing
 
-Yet another terminal emulator thing. Desktop, portable, tab and floating window focused, SFTP baked-in x-platform terminal application (inspired by MobaXTerm) built on .NET 10 and Avalonia. 
+Yet another terminal emulator thing. Desktop, portable, tab and floating window focused, SFTP baked-in cross-platform terminal application (inspired by MobaXTerm) built on .NET 10 and Avalonia. 
 
 <img src="doc/images/tt_ss1.png" style="width=50%"/>
 
