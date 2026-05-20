@@ -206,6 +206,11 @@ public sealed class SshSessionLauncher : ISessionLauncher
             client = chainResult.FinalClient;
         }
 
+        // Send SSH-level keepalives so that silent TCP drops (power-off, firewall
+        // expiry, NAT table timeout) are detected within ~30 s rather than waiting
+        // for the OS TCP keepalive timer (default: 2 hours).
+        client.KeepAliveInterval = TimeSpan.FromSeconds(30);
+
         // ----------------------------------------------------------------
         // SFTP — needs a separate client through its own forward (or direct).
         // ----------------------------------------------------------------
@@ -325,7 +330,9 @@ public sealed class SshSessionLauncher : ISessionLauncher
         var shellSw = Stopwatch.StartNew();
         var shell = client.CreateShellStream(settings.Term, cols, rows, 0, 0, 0x10000);
         Debug.WriteLine($"[SSH] CreateShellStream: {shellSw.ElapsedMilliseconds}ms");
-        instance.SetShellCommand(line => shell.WriteLine(line));
+        // Ctrl+U (0x15) kills the current input line before injecting the command,
+        // so a partially-typed user command can never interleave with the cd.
+        instance.SetShellCommand(line => { shell.Write("\x15"); shell.WriteLine(line); });
         var connection = new SshPtyConnection(client, shell);
         instance.OnPtyConnectionReady(connection);
 
@@ -401,6 +408,7 @@ internal sealed class SshSessionInstance : ISessionInstance
 
     private readonly List<LogTailWindow> _tailWindows = new();
     private bool _connectionEnded;
+    private int _sessionEndedFired; // Interlocked guard — ensures SessionEnded fires at most once
 
     public SshSessionInstance(
         TerminalControl  tc,
@@ -495,8 +503,11 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     internal void OnPtyConnectionReady(SshPtyConnection connection)
     {
-        connection.ConnectionClosed += (_, _) =>
+        // Both ConnectionClosed (SSH.NET detected the drop) and ProcessExited
+        // (TerminalView EOF fallback) route here so the overlay always appears.
+        void FireSessionEnded()
         {
+            if (Interlocked.CompareExchange(ref _sessionEndedFired, 1, 0) != 0) return;
             _connectionEnded = true;
             _sysmonPoller?.Dispose();
             _dockerMonPoller?.Dispose();
@@ -511,7 +522,14 @@ internal sealed class SshSessionInstance : ISessionInstance
                 _tailWindows.Clear();
                 SessionEnded?.Invoke(this, EventArgs.Empty);
             });
-        };
+        }
+
+        connection.ConnectionClosed += (_, _) => FireSessionEnded();
+
+        // Fallback: TerminalView raises ProcessExited when ReadAsync returns 0
+        // (EOF on the shell stream). This fires even if ConnectionClosed was missed,
+        // e.g. if the shell closed cleanly but ErrorOccurred was never raised.
+        _tc.ProcessExited += (_, _) => FireSessionEnded();
     }
 
     /// <summary>

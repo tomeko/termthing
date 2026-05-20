@@ -371,7 +371,7 @@ public partial class SessionTreeView : UserControl
     {
         var parent = SelectedGroup() ?? RootGroup!;
         var dialog = new RenameDialog("New Group") { Title = "New Subgroup" };
-        var name = await dialog.ShowDialog<string?>(TopLevel.GetTopLevel(this) as Window);
+        var name = await dialog.ShowDialog<string?>((TopLevel.GetTopLevel(this) as Window)!);
         if (name is null) return;
         var newGroup = new SessionGroup { Name = name };
         parent.Subgroups.Add(newGroup);
@@ -409,7 +409,7 @@ public partial class SessionTreeView : UserControl
         };
 
         var dialog = new RenameDialog(currentName);
-        var result = await dialog.ShowDialog<string?>(TopLevel.GetTopLevel(this) as Window);
+        var result = await dialog.ShowDialog<string?>((TopLevel.GetTopLevel(this) as Window)!);
         if (result is null) return;
 
         switch (node.Tag)
@@ -509,7 +509,7 @@ public partial class SessionTreeView : UserControl
         if (_tree.SelectedItem is not SessionTreeNode { Tag: SessionDefinition def }) return;
 
         var dialog = new IconPickerDialog(def.IconKind, def.IconColor);
-        await dialog.ShowDialog(TopLevel.GetTopLevel(this) as Window);
+        await dialog.ShowDialog((TopLevel.GetTopLevel(this) as Window)!);
 
         def.IconKind  = dialog.ResultKind;
         def.IconColor = dialog.ResultColor;

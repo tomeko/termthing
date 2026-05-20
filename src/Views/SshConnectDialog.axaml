@@ -17,7 +17,7 @@
         <!-- Host -->
         <Grid ColumnDefinitions="130,*" Margin="0,0,0,6">
             <TextBlock Grid.Column="0" Text="Host:" VerticalAlignment="Center"/>
-            <TextBox Grid.Column="1" x:Name="HostTextBox" Watermark="e.g. 192.168.1.10"/>
+            <TextBox Grid.Column="1" x:Name="HostTextBox" PlaceholderText="e.g. 192.168.1.10"/>
         </Grid>
 
         <!-- Port -->
@@ -30,7 +30,7 @@
         <StackPanel x:Name="SessionNameRow" IsVisible="False" Margin="0,0,0,6">
             <Grid ColumnDefinitions="130,*">
                 <TextBlock Grid.Column="0" Text="Session name:" VerticalAlignment="Center"/>
-                <TextBox Grid.Column="1" x:Name="SessionNameTextBox" Watermark="{}{user}@{host}"/>
+                <TextBox Grid.Column="1" x:Name="SessionNameTextBox" PlaceholderText="{}{user}@{host}"/>
             </Grid>
         </StackPanel>
 
@@ -43,7 +43,7 @@
         <!-- Private key file -->
         <Grid ColumnDefinitions="130,*,Auto" Margin="0,0,0,6">
             <TextBlock Grid.Column="0" Text="Private key file:" VerticalAlignment="Center"/>
-            <TextBox Grid.Column="1" x:Name="KeyFileTextBox" Watermark="(optional)"/>
+            <TextBox Grid.Column="1" x:Name="KeyFileTextBox" PlaceholderText="(optional)"/>
             <Button Grid.Column="2" Content="…" Margin="4,0,0,0" Click="OnBrowseKeyClicked"/>
         </Grid>
 

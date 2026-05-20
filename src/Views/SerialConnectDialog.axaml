@@ -11,7 +11,7 @@
                    Foreground="OrangeRed" FontWeight="SemiBold" TextWrapping="Wrap"/>
 
         <TextBlock Grid.Row="2" Text="Port name:" VerticalAlignment="Center"/>
-        <TextBox Grid.Row="4" Watermark="e.g. COM3 or /dev/ttyUSB0" IsEnabled="False"/>
+        <TextBox Grid.Row="4" PlaceholderText="e.g. COM3 or /dev/ttyUSB0" IsEnabled="False"/>
 
         <TextBlock Grid.Row="6" Text="Baud rate:" VerticalAlignment="Center"/>
         <TextBox Grid.Row="8" Text="9600" IsEnabled="False"/>

@@ -127,6 +127,7 @@ public partial class SftpFileBrowserView : UserControl
     private MenuItem _menuTail = null!;
     private MenuItem _menuDownloadTo = null!;
     private MenuItem _menuDelete = null!;
+    private MenuItem _menuDeleteSelected = null!;
     private MenuItem _menuProperties = null!;
     private MenuItem _menuBookmarkFolder = null!;
     private MenuItem _menuNewDirectory = null!;
@@ -215,6 +216,7 @@ public partial class SftpFileBrowserView : UserControl
         _menuTail         = this.FindControl<MenuItem>("MenuTail")!;
         _menuDownloadTo   = this.FindControl<MenuItem>("MenuDownloadTo")!;
         _menuDelete       = this.FindControl<MenuItem>("MenuDelete")!;
+        _menuDeleteSelected = this.FindControl<MenuItem>("MenuDeleteSelected")!;
         _menuProperties   = this.FindControl<MenuItem>("MenuProperties")!;
         _menuBookmarkFolder  = this.FindControl<MenuItem>("MenuBookmarkFolder")!;
         _menuNewDirectory = this.FindControl<MenuItem>("MenuNewDirectory")!;
@@ -773,7 +775,7 @@ public partial class SftpFileBrowserView : UserControl
 
     private async void OnMenuNewDirectoryClicked(object? sender, RoutedEventArgs e)
     {
-        var host = TopLevel.GetTopLevel(this) as Window;
+        var host = (TopLevel.GetTopLevel(this) as Window)!;
         var dialog = new RenameDialog("") { Title = "New Directory" };
         var name = await dialog.ShowDialog<string?>(host);
         if (string.IsNullOrWhiteSpace(name)) return;
@@ -791,7 +793,7 @@ public partial class SftpFileBrowserView : UserControl
 
     private async void OnMenuNewFileClicked(object? sender, RoutedEventArgs e)
     {
-        var host = TopLevel.GetTopLevel(this) as Window;
+        var host = (TopLevel.GetTopLevel(this) as Window)!;
         var dialog = new RenameDialog("") { Title = "New File" };
         var name = await dialog.ShowDialog<string?>(host);
         if (string.IsNullOrWhiteSpace(name)) return;
@@ -841,28 +843,67 @@ public partial class SftpFileBrowserView : UserControl
     private async void OnMenuDeleteClicked(object? sender, RoutedEventArgs e)
     {
         if (_filesGrid.SelectedItem is not SftpEntry entry || entry.IsParentLink) return;
+        await DeleteEntriesAsync([entry]);
+    }
+
+    private async void OnMenuDeleteSelectedClicked(object? sender, RoutedEventArgs e)
+    {
+        var entries = _filesGrid.SelectedItems.OfType<SftpEntry>()
+            .Where(x => !x.IsParentLink).ToList();
+        await DeleteEntriesAsync(entries);
+    }
+
+    private void OnFilesGridKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F5)
+        {
+            Refresh();
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Delete)
+        {
+            var entries = _filesGrid.SelectedItems.OfType<SftpEntry>()
+                .Where(x => !x.IsParentLink).ToList();
+            if (entries.Count > 0)
+            {
+                _ = DeleteEntriesAsync(entries);
+                e.Handled = true;
+            }
+        }
+    }
+
+    private async Task DeleteEntriesAsync(IReadOnlyList<SftpEntry> entries)
+    {
+        if (entries.Count == 0) return;
 
         if (!_suppressDeleteConfirmThisSession)
         {
             var host = TopLevel.GetTopLevel(this) as Window;
-            var confirmed = await ShowDeleteConfirmAsync(entry.Name, entry.IsDirectory, host);
-            if (confirmed == null) return; // cancelled
+            var label = entries.Count == 1
+                ? entries[0].Name
+                : $"{entries.Count} items";
+            var isDir = entries.Count == 1 && entries[0].IsDirectory;
+            var confirmed = await ShowDeleteConfirmAsync(label, isDir, host);
+            if (confirmed == null) return;
             if (confirmed.Value.SuppressFuture) _suppressDeleteConfirmThisSession = true;
             if (!confirmed.Value.Confirmed) return;
         }
 
         await Task.Run(() =>
         {
-            try
+            foreach (var entry in entries)
             {
-                if (entry.IsDirectory)
-                    DeleteDirectoryRecursive(entry.FullPath);
-                else
-                    _sftpClient.DeleteFile(entry.FullPath);
-            }
-            catch (Exception ex)
-            {
-                Dispatcher.UIThread.Post(() => SetStatus($"Delete failed: {ex.Message}"));
+                try
+                {
+                    if (entry.IsDirectory)
+                        DeleteDirectoryRecursive(entry.FullPath);
+                    else
+                        _sftpClient.DeleteFile(entry.FullPath);
+                }
+                catch (Exception ex)
+                {
+                    Dispatcher.UIThread.Post(() => SetStatus($"Delete failed: {ex.Message}"));
+                }
             }
         });
 

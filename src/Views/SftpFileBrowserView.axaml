@@ -15,7 +15,7 @@
 
     <DockPanel>
         <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="4,4,4,2">
-            <TextBox x:Name="PathBox" Grid.Column="0" FontSize="11" Watermark="Path"
+            <TextBox x:Name="PathBox" Grid.Column="0" FontSize="11" PlaceholderText="Path"
                      KeyDown="OnPathBoxKeyDown" VerticalAlignment="Center"/>
             <Button x:Name="RefreshButton" Grid.Column="1" Content="⟳" FontSize="16"
                     Padding="6,2" Margin="4,0,0,0" Click="OnRefreshClicked"
@@ -75,21 +75,23 @@
         <DataGrid x:Name="FilesGrid"
                   CanUserSortColumns="True"
                   CanUserResizeColumns="True"
-                  SelectionMode="Single"
+                  SelectionMode="Extended"
                   IsReadOnly="True"
                   GridLinesVisibility="Horizontal"
                   HeadersVisibility="Column"
                   HorizontalScrollBarVisibility="Auto"
                   FontSize="12"
                   LoadingRow="OnFilesGridLoadingRow"
-                  DoubleTapped="OnFilesGridDoubleTapped">
+                  DoubleTapped="OnFilesGridDoubleTapped"
+                  KeyDown="OnFilesGridKeyDown">
             <DataGrid.ContextMenu>
                 <ContextMenu Opening="OnContextMenuOpening">
                     <MenuItem x:Name="MenuOpen"       Header="Open"          Click="OnMenuOpenClicked"/>
                     <MenuItem x:Name="MenuOpenWith"   Header="Open With"/>
                     <MenuItem x:Name="MenuTail"       Header="Tail (live)"   Click="OnMenuTailClicked"/>
                     <MenuItem x:Name="MenuDownloadTo" Header="Download to "/>
-                    <MenuItem x:Name="MenuDelete"     Header="Delete"        Click="OnMenuDeleteClicked"/>
+                    <MenuItem x:Name="MenuDelete"         Header="Delete"          Click="OnMenuDeleteClicked"/>
+                    <MenuItem x:Name="MenuDeleteSelected"  Header="Delete selected" Click="OnMenuDeleteSelectedClicked"/>
                     <Separator/>
                     <MenuItem x:Name="MenuProperties" Header="Properties"    Click="OnMenuPropertiesClicked"/>
                     <MenuItem x:Name="MenuBookmarkFolder" Header="Bookmark this folder" Click="OnMenuBookmarkFolderClicked"/>

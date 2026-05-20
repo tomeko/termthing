@@ -12,6 +12,9 @@
     <!-- Default version for dev builds; CI overrides via -p:Version and -p:AssemblyInformationalVersion -->
     <Version>0.0.0-dev</Version>
     <AssemblyInformationalVersion>0.0.0-dev</AssemblyInformationalVersion>
+    <!-- Views instantiated programmatically always have parameterised constructors; suppress the
+         Avalonia XAML loader reachability warning that fires for every such class. -->
+    <NoWarn>$(NoWarn);AVLN3001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

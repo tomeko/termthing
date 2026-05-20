@@ -76,7 +76,7 @@
                                     <TextBox x:Name="BuiltInExtBox"
                                              Width="220"
                                              FontSize="11"
-                                             Watermark=".txt, .log  (blank = match any)"/>
+                                             PlaceholderText=".txt, .log  (blank = match any)"/>
                                 </StackPanel>
                             </StackPanel>
                             <CheckBox x:Name="BuiltInDefaultCheck"

@@ -222,7 +222,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         var passBox = new TextBox
         {
             PasswordChar = '●',
-            Watermark = "Passphrase",
+            PlaceholderText = "Passphrase",
             MinWidth = 260,
         };
 
@@ -1053,7 +1053,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         if (others.Count == 0) return;
         if (others.Count >= 2 && !await ConfirmCloseTabsAsync(others.Count)) return;
         foreach (var t in others)
-            await CloseTabAsync(t);
+            await CloseTabAsync(t, skipConfirm: true);
     }
 
     private async Task CloseTabsToRightAsync(TabItem tab)
@@ -1065,7 +1065,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         if (right.Count == 0) return;
         if (right.Count >= 2 && !await ConfirmCloseTabsAsync(right.Count)) return;
         foreach (var t in right)
-            await CloseTabAsync(t);
+            await CloseTabAsync(t, skipConfirm: true);
     }
 
     private async Task<bool> ConfirmCloseTabsAsync(int count)
@@ -1113,9 +1113,77 @@ public partial class MainWindow : Window, ISessionPromptHost
         return await tcs.Task;
     }
 
-    private async Task CloseTabAsync(TabItem tab)
+    /// <summary>
+    /// Asks the user to confirm closing a single still-active session tab.
+    /// Also persists the "Don't ask again" preference when ticked.
+    /// </summary>
+    private async Task<bool> ConfirmCloseActiveSessionAsync(TabState state)
+    {
+        var tcs       = new TaskCompletionSource<bool>();
+        var closeBtn  = new Button { Content = "Close", IsDefault = true };
+        var cancelBtn = new Button { Content = "Cancel", IsCancel = true };
+        var dontAsk   = new CheckBox { Content = "Don't ask again", Foreground = Brushes.White };
+
+        var dialog = new Window
+        {
+            Title = "Close session?",
+            Width = 320,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            SizeToContent = SizeToContent.Height,
+            RequestedThemeVariant = Avalonia.Styling.ThemeVariant.Dark,
+            Content = new StackPanel
+            {
+                Margin  = new Thickness(20, 16),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"Close \"{state.Def.Name}\"?",
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = Brushes.White,
+                    },
+                    dontAsk,
+                    new StackPanel
+                    {
+                        Orientation         = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { closeBtn, cancelBtn },
+                    },
+                },
+            },
+        };
+
+        closeBtn.Click  += (_, _) => { tcs.TrySetResult(true);  dialog.Close(); };
+        cancelBtn.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
+        dialog.Closed   += (_, _) => tcs.TrySetResult(false);
+
+        await dialog.ShowDialog(this);
+        var confirmed = await tcs.Task;
+
+        if (confirmed && dontAsk.IsChecked == true)
+        {
+            SettingsService.App.ConfirmExitWithOpenSessions = false;
+            SettingsService.SaveApp();
+        }
+
+        return confirmed;
+    }
+
+    private async Task CloseTabAsync(TabItem tab, bool skipConfirm = false)
     {
         if (!_tabStates.TryGetValue(tab, out var state)) return;
+
+        // Ask before killing an active session, unless the caller already showed
+        // a confirmation (floating-window dialog, group-close, overlay close button).
+        if (!skipConfirm
+            && state.Instance != null
+            && SettingsService.App.ConfirmExitWithOpenSessions
+            && !await ConfirmCloseActiveSessionAsync(state))
+            return;
+
         _tabStates.Remove(tab);
 
         // Close any open editor windows before killing the SFTP client, giving
@@ -1200,7 +1268,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             ResolveIconKind(state.Def),
             ResolveIconBrush(state.Def),
             () => DockBackSession(state),
-            async () => await CloseTabAsync(state.Tab))
+            async () => await CloseTabAsync(state.Tab, skipConfirm: true))
         {
             Width = Bounds.Width,
             Height = Bounds.Height,

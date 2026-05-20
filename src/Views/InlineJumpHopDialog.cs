@@ -26,10 +26,10 @@ public sealed class InlineJumpHopDialog : Window
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
-        _hostBox  = new TextBox { Watermark = "e.g. bastion.example.com" };
+        _hostBox  = new TextBox { PlaceholderText = "e.g. bastion.example.com" };
         _portBox  = new TextBox { Text = "22", Width = 80 };
         _userBox  = new TextBox();
-        _keyBox   = new TextBox { Watermark = "(optional)" };
+        _keyBox   = new TextBox { PlaceholderText = "(optional)" };
         _error    = new TextBlock { Foreground = Avalonia.Media.Brushes.OrangeRed, IsVisible = false, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
 
         var browseBtn = new Button { Content = "…", Margin = new Avalonia.Thickness(4, 0, 0, 0) };

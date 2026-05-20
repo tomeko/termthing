@@ -356,7 +356,9 @@ public partial class TextEditorWindow : Window
 /// <summary>Minimal <see cref="System.Windows.Input.ICommand"/> adapter for key bindings.</summary>
 file sealed class DelegateCommand(Func<Task> execute) : System.Windows.Input.ICommand
 {
+#pragma warning disable CS0067  // event required by ICommand but CanExecute never changes
     public event EventHandler? CanExecuteChanged;
+#pragma warning restore CS0067
     public bool CanExecute(object? parameter) => true;
     public void Execute(object? parameter) => _ = execute();
 }

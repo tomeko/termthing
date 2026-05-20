@@ -33,7 +33,7 @@
         <!-- Search box -->
         <TextBox x:Name="SearchBox"
                  DockPanel.Dock="Top"
-                 Watermark="Search icons…"
+                 PlaceholderText="Search icons…"
                  Margin="0,0,0,8" />
 
         <!-- Icon grid -->
