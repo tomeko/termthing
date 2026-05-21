@@ -1,0 +1,54 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.PasteConfirmDialog"
+        Title="Confirm paste"
+        Width="520"
+        MinHeight="240"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        SizeToContent="Height"
+        RequestedThemeVariant="Dark">
+    <Grid Margin="16" RowDefinitions="Auto,8,*,8,Auto,4,Auto,12,Auto">
+
+        <TextBlock Grid.Row="0"
+                   Text="Paste clipboard contents to the terminal?"
+                   FontWeight="SemiBold"
+                   TextWrapping="Wrap"/>
+
+        <Border Grid.Row="2"
+                BorderBrush="#555"
+                BorderThickness="1"
+                CornerRadius="3"
+                Background="#1e1e1e"
+                MaxHeight="160">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Auto">
+                <TextBlock x:Name="PreviewText"
+                           FontFamily="Cascadia Code,Consolas,monospace"
+                           FontSize="12"
+                           Padding="8"
+                           TextWrapping="NoWrap"/>
+            </ScrollViewer>
+        </Border>
+
+        <TextBlock Grid.Row="4"
+                   x:Name="SummaryText"
+                   FontSize="11"
+                   Foreground="Gray"/>
+
+        <StackPanel Grid.Row="6" Spacing="4">
+            <CheckBox x:Name="SkipForSessionCheckBox"
+                      Content="Don't ask again for this session"/>
+            <CheckBox x:Name="SkipGloballyCheckBox"
+                      Content="Don't ask again (all sessions)"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="8"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="8">
+            <Button Content="Paste" MinWidth="80" Click="OnPasteClicked" IsDefault="True"/>
+            <Button Content="Cancel" MinWidth="80" Click="OnCancelClicked" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

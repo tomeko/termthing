@@ -46,6 +46,13 @@
 
                     <CheckBox x:Name="ConfirmExitCheckBox"
                               Content="Confirm before exiting when sessions are open"/>
+
+                    <TextBlock Text="Terminal"
+                               FontWeight="SemiBold"
+                               Margin="0,8,0,2"/>
+
+                    <CheckBox x:Name="SkipPasteConfirmCheckBox"
+                              Content="Skip paste confirmation in terminal (security risk — clipboard content runs immediately)"/>
                 </StackPanel>
             </TabItem>
 

@@ -90,8 +90,8 @@
                     <MenuItem x:Name="MenuOpenWith"   Header="Open With"/>
                     <MenuItem x:Name="MenuTail"       Header="Tail (live)"   Click="OnMenuTailClicked"/>
                     <MenuItem x:Name="MenuDownloadTo" Header="Download to "/>
+                    <MenuItem x:Name="MenuRename"         Header="Rename…"         Click="OnMenuRenameClicked"/>
                     <MenuItem x:Name="MenuDelete"         Header="Delete"          Click="OnMenuDeleteClicked"/>
-                    <MenuItem x:Name="MenuDeleteSelected"  Header="Delete selected" Click="OnMenuDeleteSelectedClicked"/>
                     <Separator/>
                     <MenuItem x:Name="MenuProperties" Header="Properties"    Click="OnMenuPropertiesClicked"/>
                     <MenuItem x:Name="MenuBookmarkFolder" Header="Bookmark this folder" Click="OnMenuBookmarkFolderClicked"/>

@@ -42,6 +42,14 @@ public sealed class AppSettings
     public bool AutoCheckForUpdates { get; set; } = true;
 
     /// <summary>
+    /// When <c>true</c>, right-click paste in the terminal sends the clipboard
+    /// contents directly without showing a confirmation dialog. Default is
+    /// <c>false</c> (confirm every paste). Per-session override lives on the
+    /// session's <c>SessionSettings.SkipPasteConfirmation</c>.
+    /// </summary>
+    public bool SkipPasteConfirmation { get; set; } = false;
+
+    /// <summary>
     /// One-shot migration: converts old <see cref="FileAssociations"/> entries into
     /// <see cref="Applications"/> entries and clears the source list.
     /// </summary>

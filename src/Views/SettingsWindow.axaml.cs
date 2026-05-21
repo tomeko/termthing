@@ -63,6 +63,7 @@ public partial class SettingsWindow : Window
     private NumericUpDown _recentCount = null!;
     private DataGrid _appsGrid = null!;
     private CheckBox _confirmExit = null!;
+    private CheckBox _skipPasteConfirm = null!;
     private TextBox  _builtInExtBox = null!;
     private CheckBox _builtInDefaultCheck = null!;
 
@@ -76,11 +77,13 @@ public partial class SettingsWindow : Window
         _recentCount        = this.FindControl<NumericUpDown>("RecentCountSpinner")!;
         _appsGrid           = this.FindControl<DataGrid>("AppsGrid")!;
         _confirmExit        = this.FindControl<CheckBox>("ConfirmExitCheckBox")!;
+        _skipPasteConfirm   = this.FindControl<CheckBox>("SkipPasteConfirmCheckBox")!;
         _builtInExtBox      = this.FindControl<TextBox>("BuiltInExtBox")!;
         _builtInDefaultCheck = this.FindControl<CheckBox>("BuiltInDefaultCheck")!;
 
         _recentCount.Value = SettingsService.App.RecentSessionsCount;
         _confirmExit.IsChecked = SettingsService.App.ConfirmExitWithOpenSessions;
+        _skipPasteConfirm.IsChecked = SettingsService.App.SkipPasteConfirmation;
 
         // Populate built-in editor controls
         var builtIn = SettingsService.App.Applications
@@ -120,6 +123,7 @@ public partial class SettingsWindow : Window
 
         SettingsService.App.RecentSessionsCount = (int)(_recentCount.Value ?? 10);
         SettingsService.App.ConfirmExitWithOpenSessions = _confirmExit.IsChecked == true;
+        SettingsService.App.SkipPasteConfirmation = _skipPasteConfirm.IsChecked == true;
 
         var newApps = new List<ApplicationEntry>();
 

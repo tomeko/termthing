@@ -1,0 +1,29 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.MoveConfirmDialog"
+        Title="Move"
+        Width="420"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        SizeToContent="Height"
+        RequestedThemeVariant="Dark">
+    <Grid Margin="16" RowDefinitions="Auto,8,Auto,12,Auto">
+        <TextBlock Grid.Row="0"
+                   x:Name="MessageText"
+                   FontWeight="SemiBold"
+                   TextWrapping="Wrap"/>
+        <TextBlock Grid.Row="2"
+                   x:Name="DestText"
+                   FontFamily="Cascadia Code,Consolas,monospace"
+                   FontSize="11"
+                   Foreground="Gray"
+                   TextWrapping="Wrap"/>
+        <StackPanel Grid.Row="4"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="8">
+            <Button Content="Move" MinWidth="80" Click="OnMoveClicked" IsDefault="True"/>
+            <Button Content="Cancel" MinWidth="80" Click="OnCancelClicked" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

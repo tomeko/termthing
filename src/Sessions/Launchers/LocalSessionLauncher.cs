@@ -10,6 +10,13 @@ namespace TermThing.Sessions.Launchers;
 
 public sealed class LocalSessionLauncher : ISessionLauncher
 {
+    private readonly Action? _saveConfig;
+
+    public LocalSessionLauncher(Action? saveConfig = null)
+    {
+        _saveConfig = saveConfig;
+    }
+
     public SessionKind Kind => SessionKind.Local;
 
     public Task<ISessionInstance> LaunchAsync(
@@ -40,7 +47,7 @@ public sealed class LocalSessionLauncher : ISessionLauncher
         };
 
         // Attach terminal mouse enhancements (Ctrl+RightClick menu, Ctrl+Wheel font size)
-        TerminalContextMenuBehavior.Attach(tc);
+        TerminalContextMenuBehavior.Attach(tc, definition, _saveConfig);
 
         // TerminalView.OnLoaded auto-launches the process when Process is non-empty and
         // the control enters the visual tree — no explicit LaunchProcess() call needed here.

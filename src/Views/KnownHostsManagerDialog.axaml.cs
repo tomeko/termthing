@@ -18,6 +18,7 @@ public partial class KnownHostsManagerDialog : Window
         Refresh();
         EntriesGrid.ItemsSource = Entries;
         DataGridExt.SetDeselectOnEmptyClick(EntriesGrid, true);
+        DataGridExt.SetToggleOffSoleSelection(EntriesGrid, true);
     }
 
     private void Refresh()

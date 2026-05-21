@@ -71,7 +71,7 @@ public partial class MainWindow : Window, ISessionPromptHost
     {
         InitializeComponent();
 
-        _registry.Register(new LocalSessionLauncher());
+        _registry.Register(new LocalSessionLauncher(SaveConfig));
         _registry.Register(new SshSessionLauncher(_knownHosts, () => _config, _editors, SaveConfig));
         _registry.Register(new SerialSessionLauncher());
 

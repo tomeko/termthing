@@ -659,6 +659,7 @@ public partial class SessionTreeView : UserControl
         var tcs = new TaskCompletionSource<bool>();
         deleteBtn.Click += (_, _) => { tcs.TrySetResult(true);  win.Close(); };
         cancelBtn.Click += (_, _) => { tcs.TrySetResult(false); win.Close(); };
+        win.Opened      += (_, _) => deleteBtn.Focus();
         await win.ShowDialog(TopLevel.GetTopLevel(this) as Window ?? throw new InvalidOperationException());
         return await tcs.Task;
     }

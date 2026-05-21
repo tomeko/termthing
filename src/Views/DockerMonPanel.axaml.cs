@@ -28,6 +28,7 @@ public partial class DockerMonPanel : UserControl
 
         _containersGrid.ItemsSource = Containers;
         DataGridExt.SetDeselectOnEmptyClick(_containersGrid, true);
+        DataGridExt.SetToggleOffSoleSelection(_containersGrid, true);
 
         _poller.Snapshot += OnSnapshot;
         _poller.Error    += OnPollerError;

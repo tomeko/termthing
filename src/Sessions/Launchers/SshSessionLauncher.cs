@@ -280,7 +280,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             FontSize   = fontSize,
         };
 
-        TerminalContextMenuBehavior.Attach(tc);
+        TerminalContextMenuBehavior.Attach(tc, definition, _saveConfig);
 
         if (!tc.IsLoaded)
         {

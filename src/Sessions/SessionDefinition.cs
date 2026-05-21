@@ -58,7 +58,15 @@ public sealed record Bookmark
 [JsonDerivedType(typeof(LocalSettings), "local")]
 [JsonDerivedType(typeof(SshSettings), "ssh")]
 [JsonDerivedType(typeof(SerialSettings), "serial")]
-public abstract record SessionSettings;
+public abstract record SessionSettings
+{
+    /// <summary>
+    /// When <c>true</c>, right-click paste in this session's terminal sends
+    /// the clipboard contents without showing a confirmation dialog.
+    /// Set per-session from inside the paste-confirmation dialog itself.
+    /// </summary>
+    public bool SkipPasteConfirmation { get; init; } = false;
+}
 
 public record LocalSettings : SessionSettings
 {
