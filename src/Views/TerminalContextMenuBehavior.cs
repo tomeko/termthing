@@ -14,7 +14,6 @@ namespace TermThing.Views;
 /// Attaches mouse and paste-flow behaviours to a <see cref="TerminalControl"/>:
 ///
 /// • RightClick (no modifier)        → paste (with confirmation dialog by default).
-/// • RightClick (with text selected) → copy the selection (PuTTY-style).
 /// • Ctrl+RightClick                 → context menu (Copy / Paste / Clear Scrollback).
 /// • Ctrl+MouseWheel                 → adjust font size, persist to TempSettings.
 ///
@@ -79,9 +78,8 @@ public static class TerminalContextMenuBehavior
         // Always claim the event — we replace the submodule's default behaviour.
         e.Handled = true;
 
-        var view     = GetTerminalView(tc);
-        var terminal = tc.Terminal;
-        bool ctrl    = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        var view  = GetTerminalView(tc);
+        bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
 
         if (ctrl)
         {
@@ -90,14 +88,9 @@ public static class TerminalContextMenuBehavior
             return;
         }
 
-        if (terminal.Selection.HasSelection && view != null)
-        {
-            // RightClick with text selected → copy the selection (PuTTY-style).
-            await CopyWithFeedbackAsync(tc, view);
-            return;
-        }
-
-        // RightClick on no selection → paste, gated by confirmation settings.
+        // RightClick → always paste (gated by confirmation settings).
+        // Copy lives on the explicit context menu so a stray single-cell selection
+        // can never silently swallow a paste action.
         if (view != null)
             await RequestPasteAsync(tc, view);
     }
@@ -165,6 +158,47 @@ public static class TerminalContextMenuBehavior
         _contexts.TryGetValue(tc, out var ctx);
         var def = ctx?.Definition;
 
+        var owner = top as Window;
+
+        // -----------------------------------------------------------------
+        // Newline guard — separate, stronger gate. Runs BEFORE the regular
+        // paste-confirm so a user who silenced the regular dialog still gets
+        // warned when the clipboard would execute a multi-line command.
+        // -----------------------------------------------------------------
+        bool containsNewline = text.IndexOfAny(new[] { '\n', '\r' }) >= 0;
+        if (containsNewline)
+        {
+            bool skipNewlineGlobal  = SettingsService.App.SkipNewlinePasteConfirmation;
+            bool skipNewlineSession = def?.Settings?.SkipNewlinePasteConfirmation == true;
+
+            if (!skipNewlineGlobal && !skipNewlineSession)
+            {
+                if (owner == null) return;  // no host → fail closed for the dangerous case
+                var nlDialog = new NewlinePasteConfirmDialog(text);
+                var nlResult = await nlDialog.ShowDialog<NewlinePasteConfirmResult?>(owner);
+                if (nlResult == null) return;  // user cancelled
+
+                if (nlResult.SkipGlobally)
+                {
+                    SettingsService.App.SkipNewlinePasteConfirmation = true;
+                    SettingsService.SaveApp();
+                }
+                if (nlResult.SkipForSession && def?.Settings != null && ctx?.SaveConfig != null)
+                {
+                    def.Settings = def.Settings with { SkipNewlinePasteConfirmation = true };
+                    ctx.SaveConfig();
+                }
+            }
+
+            // Newline approval covers the regular paste warning too — skip
+            // it so the user doesn't see two dialogs back-to-back for one paste.
+            await view.PasteAsync();
+            return;
+        }
+
+        // -----------------------------------------------------------------
+        // Regular (single-line) paste path — existing flow.
+        // -----------------------------------------------------------------
         bool skipGlobal  = SettingsService.App.SkipPasteConfirmation;
         bool skipSession = def?.Settings?.SkipPasteConfirmation == true;
 
@@ -174,7 +208,6 @@ public static class TerminalContextMenuBehavior
             return;
         }
 
-        var owner = top as Window;
         if (owner == null)
         {
             // No window host → fall through to direct paste rather than silently dropping.

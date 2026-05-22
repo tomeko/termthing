@@ -236,33 +236,21 @@ internal static class SshChainConnector
         ISessionPromptHost promptHost,
         CancellationToken  ct)
     {
-        // Step 1: if no key file and no cached password, show the full secrets dialog.
+        // Step 1: if no key file and no cached password, prompt for one.
+        // Use the lightweight password popup (NOT the full SSH connect dialog) — a
+        // jump-hop already has its connection details resolved, we just need the
+        // secret. Using the full dialog here caused it to re-surface behind later
+        // prompts (the "re-appearing SSH dialog" bug).
         if (string.IsNullOrWhiteSpace(hop.KeyFilePath) &&
             string.IsNullOrEmpty(hop.TransientPassword))
         {
-            // Synthesise a temporary SessionDefinition so the existing
-            // PromptForSshSecretsAsync dialog can be reused unchanged.
-            var tempSettings = new Sessions.SshSettings
-            {
-                Host        = hop.LogicalHost,
-                Port        = hop.LogicalPort,
-                Username    = hop.Username,
-                KeyFilePath = hop.KeyFilePath,
-            };
-            var tempDef = new Sessions.SessionDefinition
-            {
-                Name     = $"Jump hop {hopNumber}: {hop.DisplayName}",
-                Kind     = Sessions.SessionKind.Ssh,
-                Settings = tempSettings,
-            };
-
-            var confirmed = await promptHost.PromptForSshSecretsAsync(tempDef);
-            if (!confirmed)
-                throw new OperationCanceledException($"User cancelled credentials for jump hop {hopNumber} ({hop.DisplayName}).");
-
-            // Copy secrets back into the hop so they survive the connection loop.
-            hop.JumpHop.TransientPassword      = tempSettings.TransientPassword;
-            hop.JumpHop.TransientKeyPassphrase = tempSettings.TransientKeyPassphrase;
+            var username = string.IsNullOrWhiteSpace(hop.Username)
+                ? Environment.UserName
+                : hop.Username;
+            var pw = await promptHost.PromptForPasswordAsync(username, hop.DisplayName);
+            if (pw is null)
+                throw new OperationCanceledException($"User cancelled password for jump hop {hopNumber} ({hop.DisplayName}).");
+            hop.JumpHop.TransientPassword = pw;
         }
 
         // Step 2: if a key file is set but no passphrase yet, probe it — the key may

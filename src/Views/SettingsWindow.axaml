@@ -53,6 +53,27 @@
 
                     <CheckBox x:Name="SkipPasteConfirmCheckBox"
                               Content="Skip paste confirmation in terminal (security risk — clipboard content runs immediately)"/>
+
+                    <CheckBox x:Name="SkipNewlinePasteConfirmCheckBox"
+                              Content="Skip newline-paste warning (the extra warning shown when pasted text contains a newline that would execute)"/>
+
+                    <TextBlock Text="OpenSSH config import"
+                               FontWeight="SemiBold"
+                               Margin="0,8,0,2"/>
+
+                    <TextBlock Text="Imported groups are read-only and refresh from their source file on every launch."
+                               FontSize="11"
+                               Foreground="Gray"
+                               TextWrapping="Wrap"/>
+
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Button x:Name="ScanSshConfigButton"    Content="Scan for SSH config…" Click="OnScanSshConfigClicked"/>
+                        <Button x:Name="ImportSshConfigButton"  Content="Import SSH config…"   Click="OnImportSshConfigClicked"/>
+                        <Button x:Name="RefreshSshConfigButton" Content="Refresh imported"      Click="OnRefreshSshConfigClicked"/>
+                    </StackPanel>
+
+                    <CheckBox x:Name="HideImportedSshConfigCheckBox"
+                              Content="Hide imported SSH config from the sessions tree"/>
                 </StackPanel>
             </TabItem>
 

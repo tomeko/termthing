@@ -47,39 +47,58 @@
             <Button Grid.Column="2" Content="…" Margin="4,0,0,0" Click="OnBrowseKeyClicked"/>
         </Grid>
 
-        <!-- SFTP -->
-        <CheckBox x:Name="SftpCheckBox" Content="Enable SFTP browser" Margin="0,0,0,6"/>
+        <!-- Advanced: SFTP / Jump hosts / ProxyCommand -->
+        <Expander Header="Advanced" IsExpanded="False" Margin="0,4,0,6">
+            <StackPanel Spacing="6" Margin="0,4,0,0">
 
-        <!-- Jump hosts (edit mode only) -->
-        <Border x:Name="JumpHostsSection" IsVisible="False"
-                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                BorderThickness="0,1,0,0"
-                Margin="0,4,0,6" Padding="0,8,0,0">
-            <StackPanel Spacing="6">
-                <TextBlock Text="Jump hosts (proxy chain):" FontWeight="SemiBold"/>
+                <!-- SFTP -->
+                <CheckBox x:Name="SftpCheckBox" Content="Enable SFTP browser"/>
 
-                <ListBox x:Name="JumpHostListBox"
-                         MaxHeight="140"
-                         SelectionMode="Single">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding DisplayLabel}"
-                                       FontFamily="Cascadia Code,Consolas,monospace"
-                                       FontSize="12"/>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
-
-                <!-- Per-hop action buttons -->
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                    <Button Content="+ Session ref…" Click="OnAddSessionRefClicked"/>
-                    <Button Content="+ Inline hop…"  Click="OnAddInlineHopClicked"/>
-                    <Button Content="↑"  Width="28" Click="OnMoveHopUpClicked"/>
-                    <Button Content="↓"  Width="28" Click="OnMoveHopDownClicked"/>
-                    <Button Content="✕"  Width="28" Click="OnRemoveHopClicked"/>
+                <!-- ProxyCommand -->
+                <StackPanel x:Name="ProxyCommandRow" Spacing="2">
+                    <TextBlock Text="Proxy command:"/>
+                    <TextBox x:Name="ProxyCommandTextBox"
+                             FontFamily="Cascadia Code,Consolas,monospace"
+                             FontSize="12"
+                             PlaceholderText="e.g. cloudflared access ssh --hostname %h"/>
+                    <TextBlock Text="Tokens: %h host, %p port, %r user. Not yet combinable with jump hosts."
+                               FontSize="11"
+                               Foreground="Gray"
+                               TextWrapping="Wrap"/>
                 </StackPanel>
+
+                <!-- Jump hosts (edit mode only) -->
+                <Border x:Name="JumpHostsSection" IsVisible="False"
+                        BorderBrush="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                        BorderThickness="0,1,0,0"
+                        Margin="0,4,0,0" Padding="0,8,0,0">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="Jump hosts (proxy chain):" FontWeight="SemiBold"/>
+
+                        <ListBox x:Name="JumpHostListBox"
+                                 MaxHeight="140"
+                                 SelectionMode="Single">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding DisplayLabel}"
+                                               FontFamily="Cascadia Code,Consolas,monospace"
+                                               FontSize="12"/>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <!-- Per-hop action buttons -->
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <Button Content="+ Session ref…" Click="OnAddSessionRefClicked"/>
+                            <Button Content="+ Inline hop…"  Click="OnAddInlineHopClicked"/>
+                            <Button Content="↑"  Width="28" Click="OnMoveHopUpClicked"/>
+                            <Button Content="↓"  Width="28" Click="OnMoveHopDownClicked"/>
+                            <Button Content="✕"  Width="28" Click="OnRemoveHopClicked"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
             </StackPanel>
-        </Border>
+        </Expander>
 
         <!-- Save as session (connect mode only) -->
         <StackPanel x:Name="SaveAsSessionRow" IsVisible="False" Margin="0,0,0,0">

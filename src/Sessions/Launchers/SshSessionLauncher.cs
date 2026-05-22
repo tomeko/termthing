@@ -39,17 +39,13 @@ public sealed class SshSessionLauncher : ISessionLauncher
         var settings = definition.Settings as SshSettings
             ?? throw new InvalidOperationException("SshSettings required.");
 
-        // Show the full connect dialog only for truly incomplete sessions (no host configured).
-        // Saved sessions with host/port/username already set skip this entirely.
-        bool needsFullDialog = !settings.TransientSecretsConfirmed
-                            && string.IsNullOrWhiteSpace(settings.KeyFilePath)
-                            && string.IsNullOrWhiteSpace(settings.Host);
-        if (needsFullDialog)
-        {
-            var confirmed = await promptHost.PromptForSshSecretsAsync(definition);
-            if (!confirmed) throw new OperationCanceledException("User cancelled SSH login.");
-            settings = (SshSettings)definition.Settings!;
-        }
+        // Hard guard: the launcher must never re-open the full SSH connect dialog —
+        // callers are expected to have collected host/port/username before reaching
+        // here. Anything missing is a programmer error and is surfaced loudly so
+        // the dialog can never silently re-appear behind subsequent prompts.
+        if (string.IsNullOrWhiteSpace(settings.Host))
+            throw new InvalidOperationException(
+                "SshSettings.Host is required at launch time. The caller must collect connection details before invoking the launcher.");
 
         // Pre-flight: probe the first hop with a short TCP connect before prompting for
         // credentials, so the user isn't asked for a password/passphrase for an unreachable host.
@@ -57,7 +53,12 @@ public sealed class SshSessionLauncher : ISessionLauncher
         var probeHost = firstHop is not null ? firstHop.Host : settings.Host;
         var probePort = firstHop is not null ? firstHop.Port : settings.Port;
 
-        if (!string.IsNullOrWhiteSpace(probeHost))
+        // Skip the TCP probe when a ProxyCommand is set and there are no jump hosts —
+        // the whole point of ProxyCommand is that the host is NOT reachable over plain
+        // TCP from this machine. The proxy process is what knows how to get there.
+        bool skipProbe = !string.IsNullOrWhiteSpace(settings.ProxyCommand) && firstHop is null;
+
+        if (!skipProbe && !string.IsNullOrWhiteSpace(probeHost))
         {
             using var probe = new System.Net.Sockets.TcpClient();
             try
@@ -125,14 +126,33 @@ public sealed class SshSessionLauncher : ISessionLauncher
 
         var hops = JumpHostResolver.Resolve(settings, _getConfig());
 
+        // ProxyCommand: spawn an external transport and connect SSH.NET through it
+        // via a loopback TCP bridge. v1: not combinable with JumpHosts.
+        ProxyCommandTransport? proxyTransport = null;
+        if (!string.IsNullOrWhiteSpace(settings.ProxyCommand))
+        {
+            if (hops.Count > 0)
+                throw new NotSupportedException(
+                    "Combining ProxyCommand with JumpHosts is not yet supported. Use one or the other.");
+
+            proxyTransport = await ProxyCommandTransport.StartAsync(
+                settings.ProxyCommand, settings.Host, settings.Port, effectiveUsername, cancellationToken);
+            Debug.WriteLine($"[SSH] ProxyCommand listening on {proxyTransport.LoopbackEndpoint}: {proxyTransport.ResolvedCommand}");
+        }
+
         SshClient client;
         SshChainResult? chainResult = null;
 
         if (hops.Count == 0)
         {
             // --- Direct connection (existing path) ---
+            // When ProxyCommand is in use, point SSH.NET at the loopback bridge but
+            // keep the known-hosts lookup keyed by the real host (done in the
+            // HostKeyReceived handler below).
+            var connectHost = proxyTransport?.LoopbackEndpoint.Address.ToString() ?? settings.Host;
+            var connectPort = proxyTransport?.LoopbackEndpoint.Port ?? settings.Port;
             var connectionInfo = SshConnectionInfoFactory.Build(
-                settings.Host, settings.Port, effectiveUsername,
+                connectHost, connectPort, effectiveUsername,
                 settings.KeyFilePath, settings.TransientKeyPassphrase, settings.TransientPassword);
 
             HostKeyEventArgs? pendingKeyArgs = null;
@@ -164,6 +184,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             if (firstConnectError is not null && pendingKeyArgs is null)
             {
                 client.Dispose();
+                if (proxyTransport is not null) { await proxyTransport.DisposeAsync(); proxyTransport = null; }
                 Debug.WriteLine($"[SSH] Connect failed: {firstConnectError.GetType().Name}: {firstConnectError.Message}");
                 throw EnrichAuthException(firstConnectError, settings);
             }
@@ -176,12 +197,30 @@ public sealed class SshSessionLauncher : ISessionLauncher
                 if (action == HostKeyAction.Cancel)
                 {
                     client.Dispose();
+                    if (proxyTransport is not null) { await proxyTransport.DisposeAsync(); proxyTransport = null; }
                     throw new OperationCanceledException("SSH connection aborted by user.");
                 }
                 if (action == HostKeyAction.TrustAndConnect)
                     _knownHosts.Trust(settings.Host, settings.Port, pendingKeyArgs);
 
                 client.Dispose();
+
+                // ProxyCommand bridges accept a single socket and stop listening — the
+                // first connect attempt consumed it, so the retry needs a fresh transport
+                // (and a rebuilt ConnectionInfo pointing at the new loopback port).
+                if (proxyTransport is not null)
+                {
+                    await proxyTransport.DisposeAsync();
+                    proxyTransport = await ProxyCommandTransport.StartAsync(
+                        settings.ProxyCommand!, settings.Host, settings.Port, effectiveUsername, cancellationToken);
+                    Debug.WriteLine($"[SSH] ProxyCommand restarted on {proxyTransport.LoopbackEndpoint} for host-key retry.");
+                    connectionInfo = SshConnectionInfoFactory.Build(
+                        proxyTransport.LoopbackEndpoint.Address.ToString(),
+                        proxyTransport.LoopbackEndpoint.Port,
+                        effectiveUsername,
+                        settings.KeyFilePath, settings.TransientKeyPassphrase, settings.TransientPassword);
+                }
+
                 client = new SshClient(connectionInfo);
                 client.HostKeyReceived += (_, e) => e.CanTrust = true;
                 try
@@ -191,6 +230,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
                 catch (Exception ex)
                 {
                     client.Dispose();
+                    if (proxyTransport is not null) { await proxyTransport.DisposeAsync(); proxyTransport = null; }
                     Debug.WriteLine($"[SSH] Retry connect after host-key trust failed: {ex.GetType().Name}: {ex.Message}");
                     throw EnrichAuthException(ex, settings);
                 }
@@ -216,14 +256,27 @@ public sealed class SshSessionLauncher : ISessionLauncher
         // ----------------------------------------------------------------
         SftpClient? sftpClient     = null;
         Task?       sftpConnectTask = null;
+        ProxyCommandTransport? sftpProxyTransport = null;
         if (settings.EnableSftp)
         {
             var sftpSw = Stopwatch.StartNew();
             if (chainResult is null)
             {
                 // Direct — reuse the same ConnectionInfo as the shell client.
+                // When ProxyCommand is in use, start a second transport so SFTP has
+                // its own independent process+socket (the shell transport's listener
+                // has already accepted its one connection).
+                string sftpHost = settings.Host;
+                int    sftpPort = settings.Port;
+                if (proxyTransport is not null)
+                {
+                    sftpProxyTransport = await ProxyCommandTransport.StartAsync(
+                        settings.ProxyCommand!, settings.Host, settings.Port, effectiveUsername, cancellationToken);
+                    sftpHost = sftpProxyTransport.LoopbackEndpoint.Address.ToString();
+                    sftpPort = sftpProxyTransport.LoopbackEndpoint.Port;
+                }
                 var directCi = SshConnectionInfoFactory.Build(
-                    settings.Host, settings.Port, effectiveUsername,
+                    sftpHost, sftpPort, effectiveUsername,
                     settings.KeyFilePath, settings.TransientKeyPassphrase, settings.TransientPassword);
                 sftpClient = new SftpClient(directCi);
             }
@@ -286,7 +339,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
         {
             var tcs = new TaskCompletionSource<bool>();
             tc.Loaded += (_, _) => tcs.TrySetResult(true);
-            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors, definition, _saveConfig);
+            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors, definition, _saveConfig, proxyTransport, sftpProxyTransport);
             // Fire-and-forget by necessity (we have to return the instance before the
             // control is loaded), but observe the task so failures aren't silent —
             // they would otherwise leave a blank terminal that can't accept input.
@@ -311,7 +364,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             return instance;
         }
 
-        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors, definition, _saveConfig);
+        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors, definition, _saveConfig, proxyTransport, sftpProxyTransport);
         await CompleteConnectionAsync(tc, client, sftpClient, settings, Task.CompletedTask, loadedInstance);
         return loadedInstance;
     }
@@ -400,6 +453,8 @@ internal sealed class SshSessionInstance : ISessionInstance
     private readonly SshChainResult? _chain;
     private readonly SessionDefinition? _definition;
     private readonly Action? _saveConfig;
+    private readonly IAsyncDisposable? _proxyTransport;
+    private readonly IAsyncDisposable? _sftpProxyTransport;
 
     private SysmonPoller? _sysmonPoller;
     private SysmonPanel? _sysmonPanel;
@@ -415,11 +470,13 @@ internal sealed class SshSessionInstance : ISessionInstance
         string           title,
         SshClient        client,
         SftpClient?      sftpClient,
-        Task?            sftpConnectTask = null,
-        SshChainResult?  chain           = null,
-        EditorRegistry?  editors         = null,
-        SessionDefinition? definition    = null,
-        Action?          saveConfig      = null)
+        Task?            sftpConnectTask     = null,
+        SshChainResult?  chain               = null,
+        EditorRegistry?  editors             = null,
+        SessionDefinition? definition        = null,
+        Action?          saveConfig          = null,
+        IAsyncDisposable? proxyTransport     = null,
+        IAsyncDisposable? sftpProxyTransport = null)
     {
         _chain = chain;
         _tc = tc;
@@ -427,6 +484,8 @@ internal sealed class SshSessionInstance : ISessionInstance
         _sftpClient = sftpClient;
         _definition = definition;
         _saveConfig = saveConfig;
+        _proxyTransport     = proxyTransport;
+        _sftpProxyTransport = sftpProxyTransport;
         Title = title;
 
         // Wrap the terminal in a Grid so DockerMon and Sysmon rows can be
@@ -694,7 +753,15 @@ internal sealed class SshSessionInstance : ISessionInstance
             }
         }
 
-        // 3. Kill the TerminalControl last.
+        // 3. ProxyCommand transports — fire-and-forget; the bridges' DisposeAsync
+        //    kills the spawned process and stops the loopback listener. Both are
+        //    idempotent and safe to drop on the floor here.
+        if (_proxyTransport is not null)
+            _ = _proxyTransport.DisposeAsync().AsTask();
+        if (_sftpProxyTransport is not null)
+            _ = _sftpProxyTransport.DisposeAsync().AsTask();
+
+        // 4. Kill the TerminalControl last.
         try { _tc.Kill(); } catch { }
     }
 

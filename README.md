@@ -45,6 +45,14 @@ If you already cloned without `--recurse-submodules`:
 ```powershell
 git submodule update --init --recursive
 ```
+## FAQ
+
+### Q. How much of this codebase is LLM-driven?
+
+### A.
+<img src="./doc/images/arnoldyeah.jpg" style="width: 200px">
+
+
 
 ## Acknowledgements
 

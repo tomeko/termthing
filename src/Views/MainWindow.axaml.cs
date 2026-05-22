@@ -12,6 +12,8 @@ using Material.Icons;
 using Material.Icons.Avalonia;
 using Renci.SshNet.Common;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using TermThing.Configuration;
@@ -35,6 +37,10 @@ public partial class MainWindow : Window, ISessionPromptHost
 
     // Session IDs currently connecting — prevents double-click from starting two sessions
     private readonly HashSet<Guid> _launching = new();
+
+    // Set while a New-SSH connect flow is running so a stray Enter or double-click
+    // can't open two SSH dialog chains in parallel.
+    private bool _newSshInFlight;
 
     private sealed class TabState
     {
@@ -140,6 +146,185 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         // Schedule the background update check ~10 s after the window opens
         ScheduleAutoUpdateCheck();
+
+        // OpenSSH config: on first launch ask if the user wants to import; on
+        // every later launch refresh any already-imported groups from their source
+        // file. Posted to the dispatcher so the window paints first.
+        Dispatcher.UIThread.Post(async () =>
+        {
+            try
+            {
+                if (!SettingsService.App.FirstRunCompleted)
+                    await OfferFirstRunSshImportAsync();
+                else
+                    await RefreshImportedSshGroupsAsync(silent: true);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ssh-config] startup import error: {ex.GetType().Name}: {ex.Message}");
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // OpenSSH config import / refresh
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// First-launch onboarding: scan the well-known OpenSSH config locations and
+    /// ask whether to import any found. Sets <c>FirstRunCompleted=true</c> at the
+    /// end regardless of the user's choice so they aren't asked again.
+    /// </summary>
+    private async Task OfferFirstRunSshImportAsync()
+    {
+        var paths = TermThing.Ssh.SshConfigImporter.Discover();
+        if (paths.Count == 0)
+        {
+            SettingsService.App.FirstRunCompleted = true;
+            SettingsService.SaveApp();
+            return;
+        }
+
+        var summary = string.Join("\n", paths.Select(p => $"  • {p}"));
+        bool yes = await ShowYesNoAsync(
+            "Import OpenSSH config?",
+            $"Found {paths.Count} OpenSSH config file(s):\n\n{summary}\n\n" +
+            "Import them as read-only sessions? Each file becomes a top-level group " +
+            "that refreshes from its source on every launch.");
+
+        if (yes)
+            await ImportSshConfigFilesAsync(paths);
+
+        SettingsService.App.FirstRunCompleted = true;
+        SettingsService.SaveApp();
+    }
+
+    /// <summary>
+    /// Re-reads each existing read-only group whose <see cref="SessionGroup.OriginKind"/>
+    /// is <c>"ssh-config"</c> and replaces its sessions from the parsed source file.
+    /// The group itself (Id, Name, position in the tree) is preserved.
+    /// </summary>
+    private async Task RefreshImportedSshGroupsAsync(bool silent)
+    {
+        int refreshed = 0, missing = 0;
+        foreach (var grp in _config.RootGroup.Subgroups.ToArray())
+        {
+            if (grp.OriginKind != "ssh-config" || string.IsNullOrEmpty(grp.SourcePath)) continue;
+            if (!File.Exists(grp.SourcePath)) { missing++; continue; }
+
+            try
+            {
+                var parsed = TermThing.Ssh.SshConfigImporter.Parse(grp.SourcePath);
+                var rebuilt = TermThing.Ssh.SshConfigImporter.ToSessionGroup(grp.SourcePath, parsed);
+                grp.Sessions.Clear();
+                foreach (var s in rebuilt.Sessions) grp.Sessions.Add(s);
+                refreshed++;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ssh-config] refresh failed for {grp.SourcePath}: {ex.Message}");
+            }
+        }
+
+        if (refreshed > 0 || missing > 0)
+        {
+            SessionTree.SetRoot(_config.RootGroup);
+            SaveConfig();
+        }
+
+        if (!silent)
+            await ShowErrorAsync("SSH config refresh",
+                $"Refreshed {refreshed} group(s)." +
+                (missing > 0 ? $"\n\n{missing} source file(s) no longer exist on disk." : ""));
+    }
+
+    /// <summary>
+    /// Imports each path as a new read-only top-level group. If a group already
+    /// exists for the same source path, it is replaced in place rather than duplicated.
+    /// </summary>
+    private async Task ImportSshConfigFilesAsync(IReadOnlyList<string> paths)
+    {
+        int added = 0, replaced = 0;
+        var problems = new List<string>();
+
+        foreach (var path in paths)
+        {
+            try
+            {
+                var parsed = TermThing.Ssh.SshConfigImporter.Parse(path);
+                var group  = TermThing.Ssh.SshConfigImporter.ToSessionGroup(path, parsed);
+
+                var existing = _config.RootGroup.Subgroups
+                    .FirstOrDefault(g => g.OriginKind == "ssh-config"
+                                      && string.Equals(g.SourcePath, path, StringComparison.OrdinalIgnoreCase));
+                if (existing is not null)
+                {
+                    existing.Name = group.Name;
+                    existing.Sessions.Clear();
+                    foreach (var s in group.Sessions) existing.Sessions.Add(s);
+                    replaced++;
+                }
+                else
+                {
+                    _config.RootGroup.Subgroups.Add(group);
+                    added++;
+                }
+            }
+            catch (Exception ex)
+            {
+                problems.Add($"{path}: {ex.Message}");
+            }
+        }
+
+        SessionTree.SetRoot(_config.RootGroup);
+        SaveConfig();
+
+        var lines = new List<string>();
+        if (added > 0)    lines.Add($"Added {added} group(s).");
+        if (replaced > 0) lines.Add($"Replaced {replaced} existing group(s).");
+        if (problems.Count > 0)
+        {
+            lines.Add("");
+            lines.Add("Problems:");
+            lines.AddRange(problems);
+        }
+        if (lines.Count > 0)
+            await ShowErrorAsync("SSH config import", string.Join("\n", lines));
+    }
+
+    /// <summary>Modal Yes/No confirmation dialog. Returns true when Yes is clicked.</summary>
+    private async Task<bool> ShowYesNoAsync(string title, string message)
+    {
+        var yesBtn = new Button { Content = "Yes", IsDefault = true, MinWidth = 80 };
+        var noBtn  = new Button { Content = "No",  IsCancel = true,  MinWidth = 80 };
+        var win = new Window
+        {
+            Title = title,
+            Width = 480,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            SizeToContent = SizeToContent.Height,
+            Content = new StackPanel
+            {
+                Margin  = new Thickness(16),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+                    new StackPanel
+                    {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { yesBtn, noBtn },
+                    },
+                },
+            },
+        };
+        yesBtn.Click += (_, _) => win.Close(true);
+        noBtn.Click  += (_, _) => win.Close(false);
+        var r = await win.ShowDialog<bool?>(this);
+        return r == true;
     }
 
     // -----------------------------------------------------------------------
@@ -298,7 +483,46 @@ public partial class MainWindow : Window, ISessionPromptHost
     private async void OnSettingsClicked(object? sender, RoutedEventArgs e)
     {
         var win = new SettingsWindow();
+        win.ScanSshConfigRequested    += async (_, _) => await ScanSshConfigInteractiveAsync();
+        win.ImportSshConfigRequested  += async (_, _) => await ImportSshConfigInteractiveAsync();
+        win.RefreshSshConfigRequested += async (_, _) => await RefreshImportedSshGroupsAsync(silent: false);
         await win.ShowDialog(this);
+        // Settings can toggle tree-visibility flags (e.g. HideImportedSshConfig)
+        // — rebuild so the change shows up without a restart.
+        if (win.Committed)
+            SessionTree.SetRoot(_config.RootGroup);
+    }
+
+    private async Task ScanSshConfigInteractiveAsync()
+    {
+        var paths = TermThing.Ssh.SshConfigImporter.Discover();
+        if (paths.Count == 0)
+        {
+            await ShowErrorAsync("Scan for SSH config",
+                "No OpenSSH config files were found in the default locations.");
+            return;
+        }
+        var summary = string.Join("\n", paths.Select(p => $"  • {p}"));
+        bool yes = await ShowYesNoAsync(
+            "Import OpenSSH config?",
+            $"Found {paths.Count} OpenSSH config file(s):\n\n{summary}\n\nImport them as read-only sessions?");
+        if (yes) await ImportSshConfigFilesAsync(paths);
+    }
+
+    private async Task ImportSshConfigInteractiveAsync()
+    {
+        var top = TopLevel.GetTopLevel(this);
+        if (top is null) return;
+        var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title         = "Import OpenSSH config",
+            AllowMultiple = false,
+        });
+        var picked = files?.FirstOrDefault();
+        if (picked is null) return;
+        var path = picked.TryGetLocalPath() ?? picked.Path.LocalPath;
+        if (string.IsNullOrWhiteSpace(path)) return;
+        await ImportSshConfigFilesAsync(new[] { path });
     }
 
     private async void OnMainWindowKeyDown(object? sender, KeyEventArgs e)
@@ -419,49 +643,59 @@ public partial class MainWindow : Window, ISessionPromptHost
 
     private async Task DoNewSshAsync()
     {
-        var dialog = new SshConnectDialog(editMode: false, appConfig: _config);
-        var result = await dialog.ShowDialog<bool?>(this);
-        if (result != true || string.IsNullOrWhiteSpace(dialog.Host)) return;
-
-        var settings = new SshSettings
+        if (_newSshInFlight) return;
+        _newSshInFlight = true;
+        try
         {
-            Host = dialog.Host!,
-            Port = dialog.Port,
-            Username = dialog.Username ?? string.Empty,
-            KeyFilePath = dialog.KeyFile,
-            EnableSftp = dialog.EnableSftp,
-            TransientSecretsConfirmed = true,
-            JumpHosts = [.. dialog.JumpHosts],
-        };
+            var dialog = new SshConnectDialog(editMode: false, appConfig: _config);
+            var result = await dialog.ShowDialog<bool?>(this);
+            if (result != true || string.IsNullOrWhiteSpace(dialog.Host)) return;
 
-        var sessionName = string.IsNullOrWhiteSpace(dialog.SessionName)
-            ? $"{dialog.Username ?? dialog.Host}@{dialog.Host}"
-            : dialog.SessionName;
-        var def = new SessionDefinition
-        {
-            Name = sessionName,
-            Kind = SessionKind.Ssh,
-            Settings = settings,
-        };
-
-        if (dialog.SaveAsSession)
-        {
-            bool alreadyExists = _config.RootGroup.Sessions.Any(s =>
-                s.Settings is SshSettings ss &&
-                ss.Host == settings.Host &&
-                ss.Port == settings.Port &&
-                ss.Username == settings.Username);
-
-            if (!alreadyExists)
+            var settings = new SshSettings
             {
-                _config.RootGroup.Sessions.Add(def);
-                SessionTree.SetRoot(_config.RootGroup);
-                SaveConfig();
-            }
-        }
+                Host = dialog.Host!,
+                Port = dialog.Port,
+                Username = dialog.Username ?? string.Empty,
+                KeyFilePath = dialog.KeyFile,
+                EnableSftp = dialog.EnableSftp,
+                ProxyCommand = dialog.ProxyCommand,
+                TransientSecretsConfirmed = true,
+                JumpHosts = [.. dialog.JumpHosts],
+            };
 
-        if (!dialog.SaveOnly)
-            await LaunchAndAddTabAsync(def);
+            var sessionName = string.IsNullOrWhiteSpace(dialog.SessionName)
+                ? $"{dialog.Username ?? dialog.Host}@{dialog.Host}"
+                : dialog.SessionName;
+            var def = new SessionDefinition
+            {
+                Name = sessionName,
+                Kind = SessionKind.Ssh,
+                Settings = settings,
+            };
+
+            if (dialog.SaveAsSession)
+            {
+                bool alreadyExists = _config.RootGroup.Sessions.Any(s =>
+                    s.Settings is SshSettings ss &&
+                    ss.Host == settings.Host &&
+                    ss.Port == settings.Port &&
+                    ss.Username == settings.Username);
+
+                if (!alreadyExists)
+                {
+                    _config.RootGroup.Sessions.Add(def);
+                    SessionTree.SetRoot(_config.RootGroup);
+                    SaveConfig();
+                }
+            }
+
+            if (!dialog.SaveOnly)
+                await LaunchAndAddTabAsync(def);
+        }
+        finally
+        {
+            _newSshInFlight = false;
+        }
     }
 
     private async Task DoNewSerialAsync()
@@ -576,12 +810,13 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         var updated = sshSettings with
         {
-            Host        = dialog.Host        ?? sshSettings.Host,
-            Port        = dialog.Port,
-            Username    = dialog.Username    ?? sshSettings.Username,
-            KeyFilePath = dialog.KeyFile,
-            EnableSftp  = dialog.EnableSftp,
-            JumpHosts   = [.. dialog.JumpHosts],
+            Host         = dialog.Host        ?? sshSettings.Host,
+            Port         = dialog.Port,
+            Username     = dialog.Username    ?? sshSettings.Username,
+            KeyFilePath  = dialog.KeyFile,
+            EnableSftp   = dialog.EnableSftp,
+            ProxyCommand = dialog.ProxyCommand,
+            JumpHosts    = [.. dialog.JumpHosts],
         };
 
         if (!string.IsNullOrWhiteSpace(dialog.SessionName))
@@ -598,37 +833,47 @@ public partial class MainWindow : Window, ISessionPromptHost
         // (host/user/key/jump-hosts) as the toolbar entry point. The session is
         // saved into the group they right-clicked. If the user clicked Connect
         // (not Save), it is also launched immediately.
-        var dialog = new SshConnectDialog(editMode: false, appConfig: _config);
-        var ok = await dialog.ShowDialog<bool?>(this);
-        if (ok != true || string.IsNullOrWhiteSpace(dialog.Host)) return;
-
-        var settings = new SshSettings
+        if (_newSshInFlight) return;
+        _newSshInFlight = true;
+        try
         {
-            Host        = dialog.Host!,
-            Port        = dialog.Port,
-            Username    = dialog.Username ?? string.Empty,
-            KeyFilePath = dialog.KeyFile,
-            EnableSftp  = dialog.EnableSftp,
-            JumpHosts   = [.. dialog.JumpHosts],
-        };
+            var dialog = new SshConnectDialog(editMode: false, appConfig: _config);
+            var ok = await dialog.ShowDialog<bool?>(this);
+            if (ok != true || string.IsNullOrWhiteSpace(dialog.Host)) return;
 
-        var sessionName = string.IsNullOrWhiteSpace(dialog.SessionName)
-            ? $"{dialog.Username ?? dialog.Host}@{dialog.Host}"
-            : dialog.SessionName;
-        var def = new SessionDefinition
+            var settings = new SshSettings
+            {
+                Host         = dialog.Host!,
+                Port         = dialog.Port,
+                Username     = dialog.Username ?? string.Empty,
+                KeyFilePath  = dialog.KeyFile,
+                EnableSftp   = dialog.EnableSftp,
+                ProxyCommand = dialog.ProxyCommand,
+                JumpHosts    = [.. dialog.JumpHosts],
+            };
+
+            var sessionName = string.IsNullOrWhiteSpace(dialog.SessionName)
+                ? $"{dialog.Username ?? dialog.Host}@{dialog.Host}"
+                : dialog.SessionName;
+            var def = new SessionDefinition
+            {
+                Name     = sessionName,
+                Kind     = SessionKind.Ssh,
+                Settings = settings,
+            };
+
+            SessionTree.AddSessionToGroup(targetGroup, def);
+            SaveConfig();
+
+            if (!dialog.SaveOnly)
+            {
+                settings.TransientSecretsConfirmed = true;
+                await LaunchAndAddTabAsync(def);
+            }
+        }
+        finally
         {
-            Name     = sessionName,
-            Kind     = SessionKind.Ssh,
-            Settings = settings,
-        };
-
-        SessionTree.AddSessionToGroup(targetGroup, def);
-        SaveConfig();
-
-        if (!dialog.SaveOnly)
-        {
-            settings.TransientSecretsConfirmed = true;
-            await LaunchAndAddTabAsync(def);
+            _newSshInFlight = false;
         }
     }
 

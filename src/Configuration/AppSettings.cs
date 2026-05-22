@@ -50,6 +50,29 @@ public sealed class AppSettings
     public bool SkipPasteConfirmation { get; set; } = false;
 
     /// <summary>
+    /// When <c>true</c>, paste-to-terminal does not show the extra "this contains
+    /// a newline — it will execute" warning. Independent from
+    /// <see cref="SkipPasteConfirmation"/>: the newline guard is a stronger
+    /// safety net so a user can keep it on even after silencing the regular
+    /// confirm dialog. Default <c>false</c> (warn on newline pastes).
+    /// </summary>
+    public bool SkipNewlinePasteConfirmation { get; set; } = false;
+
+    /// <summary>
+    /// Set after the first launch finishes its one-time onboarding (currently:
+    /// the OpenSSH config import prompt). Persisted so the prompt does not return
+    /// on subsequent launches even if the user declined the import.
+    /// </summary>
+    public bool FirstRunCompleted { get; set; } = false;
+
+    /// <summary>
+    /// When <c>true</c>, imported OpenSSH-config groups are kept in the config
+    /// (and still auto-refreshed) but hidden from the sessions tree. Lets users
+    /// keep the import wired up without cluttering their tree.
+    /// </summary>
+    public bool HideImportedSshConfig { get; set; } = false;
+
+    /// <summary>
     /// One-shot migration: converts old <see cref="FileAssociations"/> entries into
     /// <see cref="Applications"/> entries and clears the source list.
     /// </summary>

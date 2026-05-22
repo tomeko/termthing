@@ -64,11 +64,20 @@ public partial class SettingsWindow : Window
     private DataGrid _appsGrid = null!;
     private CheckBox _confirmExit = null!;
     private CheckBox _skipPasteConfirm = null!;
+    private CheckBox _skipNewlinePasteConfirm = null!;
+    private CheckBox _hideImportedSshConfig = null!;
     private TextBox  _builtInExtBox = null!;
     private CheckBox _builtInDefaultCheck = null!;
 
     // True when the user pressed OK
     public bool Committed { get; private set; }
+
+    /// <summary>Raised when the user clicks "Scan for SSH config…" in the General tab.</summary>
+    public event EventHandler? ScanSshConfigRequested;
+    /// <summary>Raised when the user clicks "Import SSH config…" in the General tab.</summary>
+    public event EventHandler? ImportSshConfigRequested;
+    /// <summary>Raised when the user clicks "Refresh imported" in the General tab.</summary>
+    public event EventHandler? RefreshSshConfigRequested;
 
     public SettingsWindow()
     {
@@ -78,12 +87,16 @@ public partial class SettingsWindow : Window
         _appsGrid           = this.FindControl<DataGrid>("AppsGrid")!;
         _confirmExit        = this.FindControl<CheckBox>("ConfirmExitCheckBox")!;
         _skipPasteConfirm   = this.FindControl<CheckBox>("SkipPasteConfirmCheckBox")!;
+        _skipNewlinePasteConfirm = this.FindControl<CheckBox>("SkipNewlinePasteConfirmCheckBox")!;
+        _hideImportedSshConfig = this.FindControl<CheckBox>("HideImportedSshConfigCheckBox")!;
         _builtInExtBox      = this.FindControl<TextBox>("BuiltInExtBox")!;
         _builtInDefaultCheck = this.FindControl<CheckBox>("BuiltInDefaultCheck")!;
 
         _recentCount.Value = SettingsService.App.RecentSessionsCount;
         _confirmExit.IsChecked = SettingsService.App.ConfirmExitWithOpenSessions;
         _skipPasteConfirm.IsChecked = SettingsService.App.SkipPasteConfirmation;
+        _skipNewlinePasteConfirm.IsChecked = SettingsService.App.SkipNewlinePasteConfirmation;
+        _hideImportedSshConfig.IsChecked = SettingsService.App.HideImportedSshConfig;
 
         // Populate built-in editor controls
         var builtIn = SettingsService.App.Applications
@@ -124,6 +137,8 @@ public partial class SettingsWindow : Window
         SettingsService.App.RecentSessionsCount = (int)(_recentCount.Value ?? 10);
         SettingsService.App.ConfirmExitWithOpenSessions = _confirmExit.IsChecked == true;
         SettingsService.App.SkipPasteConfirmation = _skipPasteConfirm.IsChecked == true;
+        SettingsService.App.SkipNewlinePasteConfirmation = _skipNewlinePasteConfirm.IsChecked == true;
+        SettingsService.App.HideImportedSshConfig = _hideImportedSshConfig.IsChecked == true;
 
         var newApps = new List<ApplicationEntry>();
 
@@ -155,6 +170,12 @@ public partial class SettingsWindow : Window
     }
 
     private void OnCancelClicked(object? sender, RoutedEventArgs e) => Close();
+
+    // SSH config import — handlers raise events so MainWindow can perform the
+    // work (it owns the config and tree). Settings stays a passive UI host.
+    private void OnScanSshConfigClicked(object? sender, RoutedEventArgs e)    => ScanSshConfigRequested?.Invoke(this, EventArgs.Empty);
+    private void OnImportSshConfigClicked(object? sender, RoutedEventArgs e)  => ImportSshConfigRequested?.Invoke(this, EventArgs.Empty);
+    private void OnRefreshSshConfigClicked(object? sender, RoutedEventArgs e) => RefreshSshConfigRequested?.Invoke(this, EventArgs.Empty);
 
     private void OnAddAppClicked(object? sender, RoutedEventArgs e)
     {

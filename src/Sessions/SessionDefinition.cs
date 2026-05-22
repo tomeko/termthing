@@ -66,6 +66,13 @@ public abstract record SessionSettings
     /// Set per-session from inside the paste-confirmation dialog itself.
     /// </summary>
     public bool SkipPasteConfirmation { get; init; } = false;
+
+    /// <summary>
+    /// When <c>true</c>, paste-to-terminal does not show the extra
+    /// "this contains a newline — it will execute" warning for this session.
+    /// Independent from <see cref="SkipPasteConfirmation"/>.
+    /// </summary>
+    public bool SkipNewlinePasteConfirmation { get; init; } = false;
 }
 
 public record LocalSettings : SessionSettings
@@ -102,6 +109,14 @@ public record SshSettings : SessionSettings
 
     /// <summary>Reserved for future per-session DockerMon panel height (px).</summary>
     public double DockerMonHeightPx { get; init; }
+
+    /// <summary>
+    /// OpenSSH-style ProxyCommand. Empty/null means a direct TCP connection.
+    /// Tokens: <c>%h</c> host, <c>%p</c> port, <c>%r</c> user. The substituted
+    /// command is spawned and its stdio is bridged to a loopback TCP port that
+    /// SSH.NET connects to. Not currently combinable with <see cref="JumpHosts"/>.
+    /// </summary>
+    public string? ProxyCommand { get; init; }
 
     // Secrets are never persisted — always prompted at connect time.
     [JsonIgnore] public string? TransientPassword { get; set; }

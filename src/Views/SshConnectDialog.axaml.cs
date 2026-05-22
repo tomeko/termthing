@@ -45,6 +45,7 @@ public partial class SshConnectDialog : Window
     public string? Username        { get; private set; }
     public string? KeyFile         { get; private set; }
     public bool    EnableSftp      { get; private set; }
+    public string? ProxyCommand    { get; private set; }
     public bool    SaveAsSession   { get; private set; }
     public string? SessionName     { get; private set; }
     /// <summary>True when the user clicked "Save" rather than "Connect".</summary>
@@ -82,6 +83,7 @@ public partial class SshConnectDialog : Window
             UsernameTextBox.Text = prefill.Username;
             KeyFileTextBox.Text  = prefill.KeyFilePath;
             SftpCheckBox.IsChecked = prefill.EnableSftp;
+            ProxyCommandTextBox.Text = prefill.ProxyCommand;
 
             foreach (var hop in prefill.JumpHosts)
                 _jumpItems.Add(MakeListItem(hop));
@@ -164,11 +166,12 @@ public partial class SshConnectDialog : Window
         // (user authenticates interactively in the terminal).
         if (_editMode && string.IsNullOrWhiteSpace(username)) { ShowError("Username is required."); return; }
 
-        Host       = host;
-        Port       = port;
-        Username   = string.IsNullOrWhiteSpace(username) ? null : username;
-        KeyFile    = string.IsNullOrWhiteSpace(KeyFileTextBox.Text) ? null : KeyFileTextBox.Text.Trim();
-        EnableSftp = SftpCheckBox.IsChecked == true;
+        Host         = host;
+        Port         = port;
+        Username     = string.IsNullOrWhiteSpace(username) ? null : username;
+        KeyFile      = string.IsNullOrWhiteSpace(KeyFileTextBox.Text) ? null : KeyFileTextBox.Text.Trim();
+        EnableSftp   = SftpCheckBox.IsChecked == true;
+        ProxyCommand = string.IsNullOrWhiteSpace(ProxyCommandTextBox.Text) ? null : ProxyCommandTextBox.Text.Trim();
 
         if (_editMode)
         {
@@ -198,11 +201,12 @@ public partial class SshConnectDialog : Window
         { ShowError("Port must be a number between 1 and 65535."); return; }
 
         var username = UsernameTextBox.Text?.Trim();
-        Host       = host;
-        Port       = port;
-        Username   = string.IsNullOrWhiteSpace(username) ? null : username;
-        KeyFile    = string.IsNullOrWhiteSpace(KeyFileTextBox.Text) ? null : KeyFileTextBox.Text.Trim();
-        EnableSftp = SftpCheckBox.IsChecked == true;
+        Host         = host;
+        Port         = port;
+        Username     = string.IsNullOrWhiteSpace(username) ? null : username;
+        KeyFile      = string.IsNullOrWhiteSpace(KeyFileTextBox.Text) ? null : KeyFileTextBox.Text.Trim();
+        EnableSftp   = SftpCheckBox.IsChecked == true;
+        ProxyCommand = string.IsNullOrWhiteSpace(ProxyCommandTextBox.Text) ? null : ProxyCommandTextBox.Text.Trim();
 
         SaveAsSession = true;  // Save button always persists the session
         SessionName   = SessionNameTextBox.Text?.Trim();

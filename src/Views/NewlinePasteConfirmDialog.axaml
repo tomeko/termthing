@@ -1,0 +1,59 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TermThing.Views.NewlinePasteConfirmDialog"
+        Title="Paste contains newlines — this will execute"
+        Width="540"
+        MinHeight="260"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        SizeToContent="Height"
+        RequestedThemeVariant="Dark">
+    <Grid Margin="16" RowDefinitions="Auto,4,Auto,8,*,8,Auto,4,Auto,12,Auto">
+
+        <TextBlock Grid.Row="0"
+                   Text="⚠ This paste contains a newline."
+                   FontWeight="SemiBold"
+                   Foreground="#FFB454"/>
+
+        <TextBlock Grid.Row="2"
+                   Text="Pasting will send Enter to the shell, executing whatever is on each line. Make sure the contents are something you intend to run."
+                   TextWrapping="Wrap"
+                   FontSize="12"/>
+
+        <Border Grid.Row="4"
+                BorderBrush="#555"
+                BorderThickness="1"
+                CornerRadius="3"
+                Background="#1e1e1e"
+                MaxHeight="180">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Auto">
+                <TextBlock x:Name="PreviewText"
+                           FontFamily="Cascadia Code,Consolas,monospace"
+                           FontSize="12"
+                           Padding="8"
+                           TextWrapping="NoWrap"/>
+            </ScrollViewer>
+        </Border>
+
+        <TextBlock Grid.Row="6"
+                   x:Name="SummaryText"
+                   FontSize="11"
+                   Foreground="Gray"/>
+
+        <StackPanel Grid.Row="8" Spacing="4">
+            <CheckBox x:Name="SkipForSessionCheckBox"
+                      Content="Don't ask about newline pastes for this session"/>
+            <CheckBox x:Name="SkipGloballyCheckBox"
+                      Content="Don't ask about newline pastes (all sessions)"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="10"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="8">
+            <Button Content="Paste and execute" MinWidth="140" Click="OnPasteClicked"/>
+            <Button Content="Cancel" MinWidth="80" Click="OnCancelClicked" IsCancel="True" IsDefault="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

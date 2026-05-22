@@ -208,6 +208,15 @@ public partial class SessionTreeView : UserControl
 
     private void OnContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        // Read-only nodes (e.g. inside an imported OpenSSH config group) have no
+        // meaningful actions — suppress the menu entirely rather than showing a
+        // pile of greyed-out items.
+        if (_tree.SelectedItem is SessionTreeNode { IsReadOnly: true })
+        {
+            e.Cancel = true;
+            return;
+        }
+
         var selectedSessions = GetSelectedSessions();
         bool multi = selectedSessions.Count > 1;
 
@@ -236,14 +245,19 @@ public partial class SessionTreeView : UserControl
             bool hasAny = node is not null;
             bool isSess = node?.IsSession == true;
             bool canDel = hasAny && (isSess || (node!.Tag is SessionGroup g && g != RootGroup));
+            bool readOnly = node?.IsReadOnly == true;
 
-            _mnuRename.IsEnabled    = hasAny;
-            _mnuIconChange.IsEnabled = isSess;
-            _mnuDuplicate.IsEnabled = isSess;
-            _mnuCut.IsEnabled       = isSess;
-            _mnuCopy.IsEnabled      = isSess;
-            _mnuPaste.IsEnabled     = _clipboard is not null;
-            _mnuDelete.IsEnabled    = canDel;
+            // Read-only nodes (imported SSH-config sessions) accept Duplicate-to-other-group
+            // and Copy-to-clipboard, but block mutation in place: no edit, rename, cut, delete,
+            // or paste-into.
+            _mnuRename.IsEnabled     = hasAny  && !readOnly;
+            _mnuIconChange.IsEnabled = isSess  && !readOnly;
+            _mnuDuplicate.IsEnabled  = isSess;
+            _mnuCut.IsEnabled        = isSess  && !readOnly;
+            _mnuCopy.IsEnabled       = isSess;
+            _mnuPaste.IsEnabled      = _clipboard is not null && !readOnly;
+            _mnuDelete.IsEnabled     = canDel && !readOnly;
+            _mnuEdit.IsEnabled       = isSess  && !readOnly;
         }
     }
 
@@ -521,34 +535,55 @@ public partial class SessionTreeView : UserControl
     private void RebuildTree()
     {
         if (RootGroup is null) return;
-        var root = WrapGroup(RootGroup);
-        _tree.ItemsSource = new[] { root };
+        // Wrap the root but expose only its children at the top level — there is
+        // no sibling of "All Sessions" the user could ever create, so showing it
+        // as a tree node just adds a wasted level of indentation. New top-level
+        // items still go to RootGroup via the SelectedGroup() ?? RootGroup fallback
+        // in the context-menu handlers.
+        var root = WrapGroup(RootGroup, ancestorReadOnly: false, readOnlyTooltip: null);
+        _tree.ItemsSource = root.Children;
     }
 
-    private static SessionTreeNode WrapGroup(SessionGroup group)
+    private static SessionTreeNode WrapGroup(SessionGroup group, bool ancestorReadOnly, string? readOnlyTooltip)
     {
         // Read persisted expansion state; default to true (expanded) when not yet recorded.
         bool expanded = Configuration.SettingsService.Temp.SessionTreeExpansion
             .GetValueOrDefault(group.Id, defaultValue: true);
 
+        bool readOnly = ancestorReadOnly || group.IsReadOnly;
+        // Use this group's source path as the tooltip if it's the read-only root,
+        // otherwise inherit the ancestor's tooltip so children show the same path.
+        string? tooltip = readOnlyTooltip
+            ?? (group.IsReadOnly && !string.IsNullOrEmpty(group.SourcePath)
+                ? $"Imported from {group.SourcePath} — read-only"
+                : null);
+
         var node = new SessionTreeNode
         {
-            Header       = group.Name,
-            Tag          = group,
-            IsExpanded   = expanded,
-            ChildCount   = CountSessions(group),
-            IconKindEnum = MaterialIconKind.Folder,
-            IconBrush    = new SolidColorBrush(Color.Parse("#BDBDBD")),
+            Header          = group.Name,
+            Tag             = group,
+            IsExpanded      = expanded,
+            ChildCount      = CountSessions(group),
+            IconKindEnum    = MaterialIconKind.Folder,
+            IconBrush       = new SolidColorBrush(Color.Parse("#BDBDBD")),
+            IsReadOnly      = readOnly,
+            ReadOnlyTooltip = tooltip,
         };
+        bool hideSshConfig = Configuration.SettingsService.App.HideImportedSshConfig;
         foreach (var sub in group.Subgroups)
-            node.Children.Add(WrapGroup(sub));
+        {
+            if (hideSshConfig && sub.OriginKind == "ssh-config") continue;
+            node.Children.Add(WrapGroup(sub, readOnly, tooltip));
+        }
         foreach (var s in group.Sessions)
             node.Children.Add(new SessionTreeNode
             {
-                Header       = s.Name,
-                Tag          = s,
-                IconKindEnum = ResolveIconKind(s),
-                IconBrush    = ParseIconBrush(s.IconColor),
+                Header          = s.Name,
+                Tag             = s,
+                IconKindEnum    = ResolveIconKind(s),
+                IconBrush       = ParseIconBrush(s.IconColor),
+                IsReadOnly      = readOnly,
+                ReadOnlyTooltip = tooltip,
             });
         return node;
     }
@@ -801,6 +836,10 @@ public partial class SessionTreeView : UserControl
     private void PerformDrop(SessionTreeNode draggedNode, SessionTreeNode targetNode, DropZone zone)
     {
         if (RootGroup is null) return;
+
+        // Read-only groups (imported SSH config) reject all mutations — drag-source
+        // out and drop-target in are both blocked.
+        if (draggedNode.IsReadOnly || targetNode.IsReadOnly) return;
 
         if (draggedNode.Tag is SessionDefinition def)
         {
