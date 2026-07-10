@@ -183,16 +183,18 @@ public static class TerminalContextMenuBehavior
                     SettingsService.App.SkipNewlinePasteConfirmation = true;
                     SettingsService.SaveApp();
                 }
-                if (nlResult.SkipForSession && def?.Settings != null && ctx?.SaveConfig != null)
+                if (nlResult.SkipForSession && def != null && ctx?.SaveConfig != null)
                 {
-                    def.Settings = def.Settings with { SkipNewlinePasteConfirmation = true };
+                    def.Settings = def.EnsureSettings() with { SkipNewlinePasteConfirmation = true };
                     ctx.SaveConfig();
                 }
             }
 
             // Newline approval covers the regular paste warning too — skip
             // it so the user doesn't see two dialogs back-to-back for one paste.
-            await view.PasteAsync();
+            // Ensure a trailing Enter so the final line actually runs — this is the
+            // "Paste and execute" action, so it must execute.
+            await view.PasteAsync(ensureTrailingNewline: true);
             return;
         }
 
@@ -225,10 +227,12 @@ public static class TerminalContextMenuBehavior
             SettingsService.SaveApp();
         }
 
-        if (result.SkipForSession && def?.Settings != null && ctx?.SaveConfig != null)
+        if (result.SkipForSession && def != null && ctx?.SaveConfig != null)
         {
             // SessionSettings is a record — mutate via `with` then reassign.
-            def.Settings = def.Settings with { SkipPasteConfirmation = true };
+            // EnsureSettings creates a record when the definition had none, so the
+            // "remember for this session" choice isn't silently dropped.
+            def.Settings = def.EnsureSettings() with { SkipPasteConfirmation = true };
             ctx.SaveConfig();
         }
 

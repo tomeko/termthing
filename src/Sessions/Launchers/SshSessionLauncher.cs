@@ -253,14 +253,19 @@ public sealed class SshSessionLauncher : ISessionLauncher
 
         // ----------------------------------------------------------------
         // SFTP — needs a separate client through its own forward (or direct).
+        // Built lazily via a connector so the SFTP browser can be opened on
+        // demand after connecting (not only at connect time). The connector
+        // captures everything needed to stand up an independent SFTP channel.
         // ----------------------------------------------------------------
-        SftpClient? sftpClient     = null;
-        Task?       sftpConnectTask = null;
-        ProxyCommandTransport? sftpProxyTransport = null;
-        if (settings.EnableSftp)
+        var chainForSftp = chainResult; // capture (may be null for direct)
+        Func<CancellationToken, Task<SftpConnection>> sftpConnector = async ct2 =>
         {
+            SftpClient sftpClient;
+            ProxyCommandTransport? localSftpProxy = null;
+            Renci.SshNet.ForwardedPortLocal? sftpFwd = null;
             var sftpSw = Stopwatch.StartNew();
-            if (chainResult is null)
+
+            if (chainForSftp is null)
             {
                 // Direct — reuse the same ConnectionInfo as the shell client.
                 // When ProxyCommand is in use, start a second transport so SFTP has
@@ -270,10 +275,10 @@ public sealed class SshSessionLauncher : ISessionLauncher
                 int    sftpPort = settings.Port;
                 if (proxyTransport is not null)
                 {
-                    sftpProxyTransport = await ProxyCommandTransport.StartAsync(
-                        settings.ProxyCommand!, settings.Host, settings.Port, effectiveUsername, cancellationToken);
-                    sftpHost = sftpProxyTransport.LoopbackEndpoint.Address.ToString();
-                    sftpPort = sftpProxyTransport.LoopbackEndpoint.Port;
+                    localSftpProxy = await ProxyCommandTransport.StartAsync(
+                        settings.ProxyCommand!, settings.Host, settings.Port, effectiveUsername, ct2);
+                    sftpHost = localSftpProxy.LoopbackEndpoint.Address.ToString();
+                    sftpPort = localSftpProxy.LoopbackEndpoint.Port;
                 }
                 var directCi = SshConnectionInfoFactory.Build(
                     sftpHost, sftpPort, effectiveUsername,
@@ -284,12 +289,12 @@ public sealed class SshSessionLauncher : ISessionLauncher
             {
                 // Tunnelled — open a new forward on the last jump client so SFTP
                 // gets its own independent TCP stream.
-                var lastJump = chainResult.JumpClients.Count > 0
-                    ? chainResult.JumpClients[^1]
+                var lastJump = chainForSftp.JumpClients.Count > 0
+                    ? chainForSftp.JumpClients[^1]
                     : null;
                 if (lastJump is not null)
                 {
-                    var sftpFwd = new Renci.SshNet.ForwardedPortLocal(
+                    sftpFwd = new Renci.SshNet.ForwardedPortLocal(
                         System.Net.IPAddress.Loopback.ToString(), (uint)0,
                         settings.Host, (uint)settings.Port);
                     lastJump.AddForwardedPort(sftpFwd);
@@ -299,23 +304,32 @@ public sealed class SshSessionLauncher : ISessionLauncher
                         effectiveUsername, settings.KeyFilePath,
                         settings.TransientKeyPassphrase, settings.TransientPassword);
                     sftpClient = new SftpClient(sftpCi);
-                    // Store the extra forward so it is disposed with the chain.
-                    chainResult = chainResult with
-                    {
-                        Forwards = [.. chainResult.Forwards, sftpFwd],
-                    };
                 }
                 else
                 {
                     // Edge case: chain resolved but no jump clients (shouldn't happen).
-                    sftpClient = new SftpClient(chainResult.FinalConnectionInfo);
+                    sftpClient = new SftpClient(chainForSftp.FinalConnectionInfo);
                 }
             }
 
-            sftpConnectTask = Task.Run(() => sftpClient.Connect(), cancellationToken)
-                .ContinueWith(_ => Debug.WriteLine($"[SSH] SFTP connect: {sftpSw.ElapsedMilliseconds}ms"),
-                    TaskScheduler.Default);
-        }
+            var connectTask = Task.Run(() => sftpClient.Connect(), ct2)
+                .ContinueWith(t =>
+                {
+                    Debug.WriteLine($"[SSH] SFTP connect: {sftpSw.ElapsedMilliseconds}ms");
+                    return t;
+                }, TaskScheduler.Default).Unwrap();
+
+            return new SftpConnection(sftpClient, connectTask, localSftpProxy, sftpFwd);
+        };
+
+        // Auto-open SFTP at connect only when requested AND initialization is not
+        // deferred. When deferred, the user opens SFTP manually later (a point at
+        // which the session is known to be past any in-shell prompt), and the
+        // shell-integration hook is injected only at that point.
+        bool autoOpenSftp = settings.EnableSftp && !settings.DeferInitialization;
+        SftpConnection? eagerSftp = autoOpenSftp
+            ? await sftpConnector(cancellationToken)
+            : null;
 
         // ----------------------------------------------------------------
         // Build terminal control and launch.
@@ -339,11 +353,11 @@ public sealed class SshSessionLauncher : ISessionLauncher
         {
             var tcs = new TaskCompletionSource<bool>();
             tc.Loaded += (_, _) => tcs.TrySetResult(true);
-            var instance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors, definition, _saveConfig, proxyTransport, sftpProxyTransport);
+            var instance = new SshSessionInstance(tc, definition.Name, client, eagerSftp, sftpConnector, chainResult, _editors, definition, _saveConfig, proxyTransport);
             // Fire-and-forget by necessity (we have to return the instance before the
             // control is loaded), but observe the task so failures aren't silent —
             // they would otherwise leave a blank terminal that can't accept input.
-            _ = CompleteConnectionAsync(tc, client, sftpClient, settings, tcs.Task, instance)
+            _ = CompleteConnectionAsync(tc, client, settings, tcs.Task, instance)
                 .ContinueWith(t =>
                 {
                     if (t.Exception is { } ex)
@@ -364,15 +378,14 @@ public sealed class SshSessionLauncher : ISessionLauncher
             return instance;
         }
 
-        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, sftpClient, sftpConnectTask, chainResult, _editors, definition, _saveConfig, proxyTransport, sftpProxyTransport);
-        await CompleteConnectionAsync(tc, client, sftpClient, settings, Task.CompletedTask, loadedInstance);
+        var loadedInstance = new SshSessionInstance(tc, definition.Name, client, eagerSftp, sftpConnector, chainResult, _editors, definition, _saveConfig, proxyTransport);
+        await CompleteConnectionAsync(tc, client, settings, Task.CompletedTask, loadedInstance);
         return loadedInstance;
     }
 
     private static async Task CompleteConnectionAsync(
         TerminalControl tc,
         SshClient client,
-        SftpClient? sftpClient,
         SshSettings settings,
         Task loadedTask,
         SshSessionInstance instance)
@@ -389,14 +402,12 @@ public sealed class SshSessionLauncher : ISessionLauncher
         var connection = new SshPtyConnection(client, shell);
         instance.OnPtyConnectionReady(connection);
 
-        if (sftpClient != null && settings.ShellIntegrationOsc7)
-        {
-            // Inject PROMPT_COMMAND via the terminal library's ShellIntegrationCommand
-            // property — the library sends it on first PTY data and strips the echoed
-            // line from output, so it remains invisible in the scrollback.
-            tc.ShellIntegrationCommand =
-                "PROMPT_COMMAND='printf \"\\033]7;file://${HOSTNAME}${PWD}\\007\"' # __ICTERMINT__";
-        }
+        // Shell-integration (OSC 7 directory tracking) is injected by the instance
+        // when the SFTP browser is active — see SshSessionInstance.EnableShellIntegration.
+        // Doing it there (rather than unconditionally here) means it is never injected
+        // into an in-shell prompt that appears before the SFTP browser is opened,
+        // which is the whole point of the "Defer initialization" option.
+        instance.MarkReadyForShellIntegration();
 
         await tc.AttachConnection(connection);
     }
@@ -438,6 +449,17 @@ public sealed class SshSessionLauncher : ISessionLauncher
 
 }
 
+/// <summary>
+/// A live SFTP channel plus the disposable resources that back it. Built by the
+/// launcher's SFTP connector, either eagerly at connect or lazily when the user
+/// opens the SFTP browser after connecting.
+/// </summary>
+internal sealed record SftpConnection(
+    SftpClient Client,
+    Task ConnectTask,
+    IAsyncDisposable? ProxyTransport,
+    Renci.SshNet.ForwardedPortLocal? Forward);
+
 internal sealed class SshSessionInstance : ISessionInstance
 {
     private readonly TerminalControl _tc;
@@ -448,13 +470,23 @@ internal sealed class SshSessionInstance : ISessionInstance
     private readonly RowDefinition _dockerMonRowDef;
     private double _dockerMonHeight = 200;
     private readonly SshClient _client;
-    private readonly SftpClient? _sftpClient;
-    private readonly SftpFileBrowserView? _sftpView;
+
+    // SFTP is opened lazily: _sftpConnector stands up a fresh channel on demand,
+    // _sftpConnection/_sftpClient/_sftpView are null until SFTP is actually open.
+    private readonly Func<CancellationToken, Task<SftpConnection>>? _sftpConnector;
+    private SftpConnection? _sftpConnection;
+    private SftpClient? _sftpClient;
+    private SftpFileBrowserView? _sftpView;
+    private readonly EditorRegistry? _editors;
+    private Action<string>? _shellCommand;
+    private bool _readyForShellIntegration;
+    private bool _shellIntegrationInjected;
+    private bool _togglingSftp;
+
     private readonly SshChainResult? _chain;
     private readonly SessionDefinition? _definition;
     private readonly Action? _saveConfig;
     private readonly IAsyncDisposable? _proxyTransport;
-    private readonly IAsyncDisposable? _sftpProxyTransport;
 
     private SysmonPoller? _sysmonPoller;
     private SysmonPanel? _sysmonPanel;
@@ -469,23 +501,22 @@ internal sealed class SshSessionInstance : ISessionInstance
         TerminalControl  tc,
         string           title,
         SshClient        client,
-        SftpClient?      sftpClient,
-        Task?            sftpConnectTask     = null,
+        SftpConnection?  eagerSftp,
+        Func<CancellationToken, Task<SftpConnection>>? sftpConnector = null,
         SshChainResult?  chain               = null,
         EditorRegistry?  editors             = null,
         SessionDefinition? definition        = null,
         Action?          saveConfig          = null,
-        IAsyncDisposable? proxyTransport     = null,
-        IAsyncDisposable? sftpProxyTransport = null)
+        IAsyncDisposable? proxyTransport     = null)
     {
         _chain = chain;
         _tc = tc;
         _client = client;
-        _sftpClient = sftpClient;
+        _sftpConnector = sftpConnector;
+        _editors = editors;
         _definition = definition;
         _saveConfig = saveConfig;
-        _proxyTransport     = proxyTransport;
-        _sftpProxyTransport = sftpProxyTransport;
+        _proxyTransport = proxyTransport;
         Title = title;
 
         // Wrap the terminal in a Grid so DockerMon and Sysmon rows can be
@@ -516,42 +547,158 @@ internal sealed class SshSessionInstance : ISessionInstance
         _hostPanel.Children.Add(_dockerMonSlot);
         _hostPanel.Children.Add(_sysmonSlot);
 
-        if (sftpClient != null)
+        // Propagate terminal directory changes to the SFTP view whenever one is open.
+        tc.PropertyChanged += (_, args) =>
         {
-            _sftpView = new SftpFileBrowserView(sftpClient, client, editors, definition, saveConfig);
+            if (args.Property == TerminalControl.CurrentDirectoryProperty && args.NewValue is string path)
+                Dispatcher.UIThread.Post(() => _sftpView?.OnTerminalDirectoryChanged(path));
+        };
 
-            // Wire monitor + tail callbacks before anything fires.
-            _sftpView.SysmonToggleRequested    = on => TrySetSysmonEnabled(on);
-            _sftpView.DockerMonToggleRequested = on => TrySetDockerMonEnabledAsync(on);
-            _sftpView.TailFileRequested        = OpenTailWindow;
-
-            // Restore persisted toggle state from session settings.
-            var ss = definition?.Settings as SshSettings;
-            _sftpView.SetInitialMonitorState(ss?.SysmonEnabled == true, ss?.DockerMonEnabled == true);
-            if (ss?.SysmonEnabled == true)    TrySetSysmonEnabled(true);
-            if (ss?.DockerMonEnabled == true) _ = TrySetDockerMonEnabledAsync(true);
-
-            // Navigate to home directory once the SFTP handshake completes.
-            // sftpConnectTask may already be completed (synchronous path) or still
-            // running (lazy background path); ContinueWith handles both correctly.
-            (sftpConnectTask ?? Task.CompletedTask).ContinueWith(_ =>
-            {
-                if (!sftpClient.IsConnected) return;
-                var homeDir = sftpClient.WorkingDirectory;
-                Dispatcher.UIThread.Post(() => _sftpView.NavigateTo(homeDir));
-            }, TaskScheduler.Default);
-
-            tc.PropertyChanged += (_, args) =>
-            {
-                if (args.Property == TerminalControl.CurrentDirectoryProperty && args.NewValue is string path)
-                    Dispatcher.UIThread.Post(() => _sftpView.OnTerminalDirectoryChanged(path));
-            };
-        }
+        // Eager open (SFTP requested at connect and initialization not deferred).
+        if (eagerSftp is not null)
+            AttachSftp(eagerSftp);
 
         TerminalView.AddTitleChangedHandler(tc, (_, e) =>
         {
             if (!e.Handled) { Title = e.Title; e.Handled = true; }
         });
+    }
+
+    /// <summary>
+    /// Wires a freshly-connected <see cref="SftpConnection"/> into a new
+    /// <see cref="SftpFileBrowserView"/>, restores monitor toggles, and navigates to
+    /// the remote home directory once the handshake completes. Shared by the eager
+    /// (connect-time) path and the lazy <see cref="SetSftpEnabledAsync"/> path.
+    /// </summary>
+    private void AttachSftp(SftpConnection conn)
+    {
+        _sftpConnection = conn;
+        _sftpClient     = conn.Client;
+
+        var view = new SftpFileBrowserView(conn.Client, _client, _editors, _definition, _saveConfig)
+        {
+            SysmonToggleRequested    = on => TrySetSysmonEnabled(on),
+            DockerMonToggleRequested = on => TrySetDockerMonEnabledAsync(on),
+            TailFileRequested        = OpenTailWindow,
+        };
+        _sftpView = view;
+
+        view.CloseRequested += (_, _) => _ = SetSftpEnabledAsync(false);
+
+        if (_shellCommand is not null)
+            view.SetShellCommand(_shellCommand);
+
+        // Restore persisted monitor toggle state from session settings.
+        var ss = _definition?.Settings as SshSettings;
+        view.SetInitialMonitorState(ss?.SysmonEnabled == true, ss?.DockerMonEnabled == true);
+        if (ss?.SysmonEnabled == true)    TrySetSysmonEnabled(true);
+        if (ss?.DockerMonEnabled == true) _ = TrySetDockerMonEnabledAsync(true);
+
+        // Opening SFTP is a known-safe point to enable OSC 7 directory tracking:
+        // the user has explicitly asked for the browser, so the shell is past any
+        // in-session password/passphrase prompt.
+        EnableShellIntegration();
+
+        // Navigate to the remote home directory once the SFTP handshake completes.
+        conn.ConnectTask.ContinueWith(_ =>
+        {
+            if (!conn.Client.IsConnected) return;
+            var homeDir = conn.Client.WorkingDirectory;
+            Dispatcher.UIThread.Post(() => view.NavigateTo(homeDir));
+        }, TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Injects the OSC 7 <c>PROMPT_COMMAND</c> shell-integration hook (once) so the
+    /// terminal reports its working directory. Only fires after the shell stream is
+    /// ready (<see cref="MarkReadyForShellIntegration"/>) and when OSC 7 is enabled
+    /// for this session. The terminal sends it on the next chunk of PTY output.
+    /// </summary>
+    private void EnableShellIntegration()
+    {
+        if (_shellIntegrationInjected || !_readyForShellIntegration) return;
+        if (_definition?.Settings is SshSettings ss && !ss.ShellIntegrationOsc7) return;
+        _shellIntegrationInjected = true;
+        Dispatcher.UIThread.Post(() =>
+            _tc.ShellIntegrationCommand =
+                "PROMPT_COMMAND='printf \"\\033]7;file://${HOSTNAME}${PWD}\\007\"' # __ICTERMINT__");
+    }
+
+    /// <summary>
+    /// Called by the launcher once the PTY shell stream is attached. Marks the
+    /// session as ready for shell-integration injection and, if SFTP is already
+    /// open, injects immediately.
+    /// </summary>
+    internal void MarkReadyForShellIntegration()
+    {
+        _readyForShellIntegration = true;
+        if (_sftpView is not null)
+            EnableShellIntegration();
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-connect SFTP open/close
+    // -----------------------------------------------------------------------
+
+    public bool CanUseSftp => _sftpConnector is not null;
+    public bool IsSftpActive => _sftpView is not null;
+    public event EventHandler? SftpPanelChanged;
+
+    /// <summary>
+    /// Opens (<paramref name="on"/> = true) or closes the SFTP browser after the
+    /// session has connected. Idempotent; safe to call from the UI thread.
+    /// </summary>
+    public async Task<bool> SetSftpEnabledAsync(bool on)
+    {
+        if (_connectionEnded) return false;
+        if (_togglingSftp) return false;
+        _togglingSftp = true;
+        try
+        {
+            if (on)
+            {
+                if (_sftpView is not null) return true;      // already open
+                if (_sftpConnector is null) return false;
+
+                SftpConnection conn;
+                try { conn = await _sftpConnector(CancellationToken.None); }
+                catch { return false; }
+
+                AttachSftp(conn);
+                SftpPanelChanged?.Invoke(this, EventArgs.Empty);
+                return true;
+            }
+            else
+            {
+                if (_sftpView is null) return true;          // already closed
+                _sftpView = null;
+                var conn = _sftpConnection;
+                _sftpConnection = null;
+                _sftpClient = null;
+                await DisposeSftpConnectionAsync(conn);
+                SftpPanelChanged?.Invoke(this, EventArgs.Empty);
+                return true;
+            }
+        }
+        finally
+        {
+            _togglingSftp = false;
+        }
+    }
+
+    private static async Task DisposeSftpConnectionAsync(SftpConnection? conn)
+    {
+        if (conn is null) return;
+        try { conn.Client.Dispose(); } catch { }
+        if (conn.Forward is not null)
+        {
+            try { conn.Forward.Stop();    } catch { }
+            try { conn.Forward.Dispose(); } catch { }
+        }
+        if (conn.ProxyTransport is not null)
+        {
+            try { await conn.ProxyTransport.DisposeAsync(); } catch { }
+        }
     }
 
     /// <summary>
@@ -570,7 +717,7 @@ internal sealed class SshSessionInstance : ISessionInstance
             _connectionEnded = true;
             _sysmonPoller?.Dispose();
             _dockerMonPoller?.Dispose();
-            _sftpClient?.Dispose();
+            _ = DisposeSftpConnectionAsync(_sftpConnection);
             // Close any open tail windows — their underlying exec channels are dead.
             Dispatcher.UIThread.Post(() =>
             {
@@ -597,6 +744,7 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     internal void SetShellCommand(Action<string> sendCommand)
     {
+        _shellCommand = sendCommand;
         _sftpView?.SetShellCommand(sendCommand);
     }
 
@@ -736,7 +884,8 @@ internal sealed class SshSessionInstance : ISessionInstance
         // 1. Disconnect the final-target SSH client — tears down the shell stream.
         try { if (_client.IsConnected) _client.Disconnect(); } catch { }
         try { _client.Dispose(); } catch { }
-        try { _sftpClient?.Dispose(); } catch { }
+        // SFTP client + its forward + its ProxyCommand transport (if any).
+        _ = DisposeSftpConnectionAsync(_sftpConnection);
 
         // 2. Dispose jump-host chain resources in reverse order.
         if (_chain is not null)
@@ -753,13 +902,12 @@ internal sealed class SshSessionInstance : ISessionInstance
             }
         }
 
-        // 3. ProxyCommand transports — fire-and-forget; the bridges' DisposeAsync
-        //    kills the spawned process and stops the loopback listener. Both are
-        //    idempotent and safe to drop on the floor here.
+        // 3. The shell's ProxyCommand transport — fire-and-forget; the bridge's
+        //    DisposeAsync kills the spawned process and stops the loopback listener.
+        //    Idempotent and safe to drop on the floor here. (The SFTP transport is
+        //    disposed above via DisposeSftpConnectionAsync.)
         if (_proxyTransport is not null)
             _ = _proxyTransport.DisposeAsync().AsTask();
-        if (_sftpProxyTransport is not null)
-            _ = _sftpProxyTransport.DisposeAsync().AsTask();
 
         // 4. Kill the TerminalControl last.
         try { _tc.Kill(); } catch { }

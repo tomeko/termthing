@@ -21,6 +21,14 @@
             <Setter Property="FontFeatures" Value="-calt -dlig"/>
         </Style>
 
+        <!-- Give buttons a clearly visible focus ring when navigated by keyboard
+             (Tab / arrows). Only the border brush changes, so there is no layout
+             shift; :focus-visible means it never appears on plain mouse clicks.
+             This is what makes dialog buttons keyboard-navigable in an obvious way. -->
+        <Style Selector="Button:focus-visible">
+            <Setter Property="BorderBrush" Value="#5AA9FF"/>
+        </Style>
+
         <!-- Remove the white cell selection border from all DataGrids globally -->
         <Style Selector="DataGridCell">
             <Setter Property="FocusAdorner" Value="{x:Null}"/>

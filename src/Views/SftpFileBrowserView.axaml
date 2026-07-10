@@ -14,11 +14,16 @@
     </UserControl.Styles>
 
     <DockPanel>
-        <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="4,4,4,2">
+        <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto,Auto" Margin="4,4,4,2">
             <TextBox x:Name="PathBox" Grid.Column="0" FontSize="11" PlaceholderText="Path"
                      KeyDown="OnPathBoxKeyDown" VerticalAlignment="Center"/>
             <Button x:Name="RefreshButton" Grid.Column="1" Content="⟳" FontSize="16"
                     Padding="6,2" Margin="4,0,0,0" Click="OnRefreshClicked"
+                    ToolTip.Tip="Refresh (F5)"
+                    VerticalAlignment="Center"/>
+            <Button x:Name="CloseSftpButton" Grid.Column="2" Content="✕" FontSize="13"
+                    Padding="6,2" Margin="4,0,0,0" Click="OnCloseSftpClicked"
+                    ToolTip.Tip="Close SFTP browser for this session"
                     VerticalAlignment="Center"/>
         </Grid>
 

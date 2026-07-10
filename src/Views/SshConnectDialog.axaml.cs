@@ -45,6 +45,7 @@ public partial class SshConnectDialog : Window
     public string? Username        { get; private set; }
     public string? KeyFile         { get; private set; }
     public bool    EnableSftp      { get; private set; }
+    public bool    DeferInitialization { get; private set; }
     public string? ProxyCommand    { get; private set; }
     public bool    SaveAsSession   { get; private set; }
     public string? SessionName     { get; private set; }
@@ -83,6 +84,7 @@ public partial class SshConnectDialog : Window
             UsernameTextBox.Text = prefill.Username;
             KeyFileTextBox.Text  = prefill.KeyFilePath;
             SftpCheckBox.IsChecked = prefill.EnableSftp;
+            DeferInitCheckBox.IsChecked = prefill.DeferInitialization;
             ProxyCommandTextBox.Text = prefill.ProxyCommand;
 
             foreach (var hop in prefill.JumpHosts)
@@ -171,6 +173,7 @@ public partial class SshConnectDialog : Window
         Username     = string.IsNullOrWhiteSpace(username) ? null : username;
         KeyFile      = string.IsNullOrWhiteSpace(KeyFileTextBox.Text) ? null : KeyFileTextBox.Text.Trim();
         EnableSftp   = SftpCheckBox.IsChecked == true;
+        DeferInitialization = DeferInitCheckBox.IsChecked == true;
         ProxyCommand = string.IsNullOrWhiteSpace(ProxyCommandTextBox.Text) ? null : ProxyCommandTextBox.Text.Trim();
 
         if (_editMode)
@@ -206,6 +209,7 @@ public partial class SshConnectDialog : Window
         Username     = string.IsNullOrWhiteSpace(username) ? null : username;
         KeyFile      = string.IsNullOrWhiteSpace(KeyFileTextBox.Text) ? null : KeyFileTextBox.Text.Trim();
         EnableSftp   = SftpCheckBox.IsChecked == true;
+        DeferInitialization = DeferInitCheckBox.IsChecked == true;
         ProxyCommand = string.IsNullOrWhiteSpace(ProxyCommandTextBox.Text) ? null : ProxyCommandTextBox.Text.Trim();
 
         SaveAsSession = true;  // Save button always persists the session

@@ -6,6 +6,8 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
+using Iciclecreek.Terminal;
 using Material.Icons;
 using Material.Icons.Avalonia;
 using TermThing.Configuration;
@@ -65,6 +67,26 @@ public partial class FloatingSessionWindow : Window
 
         DockBackButton.Click += OnDockBackClicked;
         Closing += OnWindowClosing;
+
+        // When this floating window regains focus, hand it to the terminal so the
+        // user can type immediately without clicking into it first.
+        Activated += OnWindowActivated;
+    }
+
+    private void OnWindowActivated(object? sender, EventArgs e)
+    {
+        var terminal = TerminalHost.GetVisualDescendants().OfType<TerminalControl>().FirstOrDefault();
+        if (terminal is null) return;
+        if (terminal.IsLoaded)
+            terminal.Focus();
+        else
+            terminal.Loaded += FocusOnce;
+
+        void FocusOnce(object? s, RoutedEventArgs _)
+        {
+            terminal.Loaded -= FocusOnce;
+            terminal.Focus();
+        }
     }
 
     private void OnSftpSplitterDragCompleted(object? sender, VectorEventArgs e)
@@ -199,6 +221,7 @@ public partial class FloatingSessionWindow : Window
         reattachBtn.Click += (_, _) => { tcs.TrySetResult(CloseDialogResult.ReAttach); dialog.Close(); };
         cancelBtn.Click   += (_, _) => { tcs.TrySetResult(null);                        dialog.Close(); };
         dialog.Closed     += (_, _) => tcs.TrySetResult(null);
+        dialog.Opened     += (_, _) => closeBtn.Focus(NavigationMethod.Tab);
 
         dialog.ShowDialog(this);
         return tcs.Task;

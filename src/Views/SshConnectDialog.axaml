@@ -52,7 +52,15 @@
             <StackPanel Spacing="6" Margin="0,4,0,0">
 
                 <!-- SFTP -->
-                <CheckBox x:Name="SftpCheckBox" Content="Enable SFTP browser"/>
+                <CheckBox x:Name="SftpCheckBox" Content="Open SFTP on connect"/>
+
+                <!-- Defer initialization -->
+                <CheckBox x:Name="DeferInitCheckBox" Content="Defer initialization"/>
+                <TextBlock Text="Don't auto-run shell integration on connect. Use this when the session prompts for input (e.g. a passphrase) before reaching a shell, so injected setup can't land in that prompt."
+                           FontSize="11"
+                           Foreground="Gray"
+                           TextWrapping="Wrap"
+                           Margin="24,-2,0,0"/>
 
                 <!-- ProxyCommand -->
                 <StackPanel x:Name="ProxyCommandRow" Spacing="2">

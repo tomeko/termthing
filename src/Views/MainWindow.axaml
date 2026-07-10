@@ -8,6 +8,19 @@
         MinWidth="800" MinHeight="500"
         KeyDown="OnMainWindowKeyDown">
 
+    <Window.Styles>
+        <!-- Active-pane indicator: a subtle accent border on whichever main section
+             holds keyboard focus (left pane vs. terminal), so it's clear where typing
+             goes. Thickness stays 1 (transparent when unfocused) to avoid layout shift. -->
+        <Style Selector="Border.pane">
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+        </Style>
+        <Style Selector="Border.pane:focus-within">
+            <Setter Property="BorderBrush" Value="#0078d4"/>
+        </Style>
+    </Window.Styles>
+
     <DockPanel>
 
         <!-- Top toolbar -->
@@ -57,23 +70,24 @@
             </Grid.ColumnDefinitions>
 
             <!-- Left pane: Sessions tree / SFTP browser -->
-            <TabControl Grid.Column="0"
-                        x:Name="LeftTabs"
-                        TabStripPlacement="Bottom"
-                        Background="#252526">
-                <TabItem Header="Sessions">
-                    <views:SessionTreeView x:Name="SessionTree"/>
-                </TabItem>
-                <TabItem Header="SFTP" x:Name="SftpTab">
-                    <ContentControl x:Name="SftpPanelHost">
-                        <TextBlock Text="No SFTP session active"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center"
-                                   Foreground="Gray"
-                                   FontSize="11"/>
-                    </ContentControl>
-                </TabItem>
-            </TabControl>
+            <Border Grid.Column="0" Classes="pane">
+                <TabControl x:Name="LeftTabs"
+                            TabStripPlacement="Bottom"
+                            Background="#252526">
+                    <TabItem Header="Sessions">
+                        <views:SessionTreeView x:Name="SessionTree"/>
+                    </TabItem>
+                    <TabItem Header="SFTP" x:Name="SftpTab">
+                        <ContentControl x:Name="SftpPanelHost">
+                            <TextBlock Text="No SFTP session active"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Foreground="Gray"
+                                       FontSize="11"/>
+                        </ContentControl>
+                    </TabItem>
+                </TabControl>
+            </Border>
 
             <GridSplitter Grid.Column="1"
                           Background="#444"
@@ -81,10 +95,11 @@
                           DragCompleted="OnSplitterDragCompleted"/>
 
             <!-- Terminal tabs -->
-            <TabControl Grid.Column="2"
-                        x:Name="TerminalTabs"
-                        TabStripPlacement="Top"
-                        SelectionChanged="OnTabSelectionChanged"/>
+            <Border Grid.Column="2" Classes="pane">
+                <TabControl x:Name="TerminalTabs"
+                            TabStripPlacement="Top"
+                            SelectionChanged="OnTabSelectionChanged"/>
+            </Border>
         </Grid>
     </DockPanel>
 </Window>

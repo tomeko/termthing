@@ -56,7 +56,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         /// Stable editor-session ID sourced from <see cref="SftpFileBrowserView.SessionEditorId"/>.
         /// Null for sessions without an SFTP browser.
         /// </summary>
-        public Guid? SftpEditorSessionId { get; init; }
+        public Guid? SftpEditorSessionId { get; set; }
     }
 
     // Tab drag-and-drop state
@@ -112,6 +112,19 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         // Restore layout from TempSettings once the window is loaded
         this.Loaded += OnWindowLoaded;
+
+        // When the OS returns focus to the window (e.g. alt-tab back), push focus
+        // to the active terminal so the user can type immediately without clicking.
+        this.Activated += OnWindowActivated;
+    }
+
+    private void OnWindowActivated(object? sender, EventArgs e)
+    {
+        if (TerminalTabs?.SelectedItem is not TabItem selected) return;
+        if (!_tabStates.TryGetValue(selected, out var state)) return;
+        if (state.Overlay is not null) return; // disconnect overlay owns focus
+        if ((state.Instance?.Terminal as Control ?? state.Instance?.TabContent) is { } term)
+            FocusTerminal(term);
     }
 
     // -----------------------------------------------------------------------
@@ -658,6 +671,7 @@ public partial class MainWindow : Window, ISessionPromptHost
                 Username = dialog.Username ?? string.Empty,
                 KeyFilePath = dialog.KeyFile,
                 EnableSftp = dialog.EnableSftp,
+                DeferInitialization = dialog.DeferInitialization,
                 ProxyCommand = dialog.ProxyCommand,
                 TransientSecretsConfirmed = true,
                 JumpHosts = [.. dialog.JumpHosts],
@@ -815,6 +829,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             Username     = dialog.Username    ?? sshSettings.Username,
             KeyFilePath  = dialog.KeyFile,
             EnableSftp   = dialog.EnableSftp,
+            DeferInitialization = dialog.DeferInitialization,
             ProxyCommand = dialog.ProxyCommand,
             JumpHosts    = [.. dialog.JumpHosts],
         };
@@ -848,6 +863,7 @@ public partial class MainWindow : Window, ISessionPromptHost
                 Username     = dialog.Username ?? string.Empty,
                 KeyFilePath  = dialog.KeyFile,
                 EnableSftp   = dialog.EnableSftp,
+                DeferInitialization = dialog.DeferInitialization,
                 ProxyCommand = dialog.ProxyCommand,
                 JumpHosts    = [.. dialog.JumpHosts],
             };
@@ -1181,6 +1197,17 @@ public partial class MainWindow : Window, ISessionPromptHost
                 _editors.NotifySessionEnded(state.SftpEditorSessionId.Value);
             Dispatcher.UIThread.Post(() => ShowDisconnectOverlay(state));
         };
+
+        // SFTP opened/closed after connect (post-connect toggle) — refresh the left
+        // pane if this session's tab is the one currently selected.
+        instance.SftpPanelChanged += (_, _) => Dispatcher.UIThread.Post(() =>
+        {
+            // Keep the editor-session id in sync so tab-close cleanup still works.
+            state.SftpEditorSessionId = (instance.SftpPanel as SftpFileBrowserView)?.SessionEditorId
+                                        ?? state.SftpEditorSessionId;
+            if (TerminalTabs?.SelectedItem == state.Tab)
+                AttachSftpPanel(state, switchToSftpTab: instance.IsSftpActive);
+        });
     }
 
     private void ShowDisconnectOverlay(TabState state)
@@ -1260,6 +1287,14 @@ public partial class MainWindow : Window, ISessionPromptHost
         state.Host.Children.Add(newInstance.TabContent);
         WireSessionInstance(state, newInstance);
         FocusTerminal((Control?)newInstance.Terminal ?? newInstance.TabContent);
+
+        // Re-attach the new instance's SFTP panel. ShowDisconnectOverlay replaced
+        // the panel host with the "No SFTP session active" placeholder on disconnect;
+        // the reconnected view is alive and navigating home, so it just needs to be
+        // shown again. Only re-attach when this is the selected tab, and don't force
+        // the left pane over to the SFTP tab (respect where the user currently is).
+        if (ReferenceEquals(TerminalTabs?.SelectedItem, state.Tab))
+            AttachSftpPanel(state, switchToSftpTab: false);
     }
 
     // -------------------------------------------------------------------------
@@ -1353,6 +1388,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         closeBtn.Click  += (_, _) => { tcs.TrySetResult(true);  dialog.Close(); };
         cancelBtn.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
         dialog.Closed   += (_, _) => tcs.TrySetResult(false);
+        dialog.Opened   += (_, _) => closeBtn.Focus(NavigationMethod.Tab);
 
         await dialog.ShowDialog(this);
         return await tcs.Task;
@@ -1404,6 +1440,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         closeBtn.Click  += (_, _) => { tcs.TrySetResult(true);  dialog.Close(); };
         cancelBtn.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
         dialog.Closed   += (_, _) => tcs.TrySetResult(false);
+        dialog.Opened   += (_, _) => closeBtn.Focus(NavigationMethod.Tab);
 
         await dialog.ShowDialog(this);
         var confirmed = await tcs.Task;
@@ -1583,31 +1620,96 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         _tabStates.TryGetValue(selected, out var selState);
 
-        // Focus the active terminal (skip when a disconnect overlay is showing)
+        // Focus the active terminal (skip when a disconnect overlay is showing).
+        // Use FocusTerminal so a terminal that isn't loaded yet — e.g. one just
+        // revealed by closing the tab above it — gets focused via its Loaded hook
+        // instead of being silently skipped.
         if (selState?.Overlay is null && (selState?.Instance?.Terminal as Control ?? selState?.Instance?.TabContent) is { } term)
-        {
-            if (term.IsLoaded)
-                Dispatcher.UIThread.Post(() => term.Focus(), DispatcherPriority.Background);
-        }
+            FocusTerminal(term);
 
         // Update SFTP panel
+        AttachSftpPanel(selState, switchToSftpTab: true);
+    }
+
+    /// <summary>
+    /// Points the SFTP panel host at <paramref name="state"/>'s SFTP view (or the
+    /// placeholder when there is none / a disconnect overlay is showing). When
+    /// <paramref name="switchToSftpTab"/> is true the left pane also switches to the
+    /// SFTP tab — desired on explicit tab selection, but not on reconnect where we
+    /// don't want to yank the user off the Sessions tab.
+    /// </summary>
+    private void AttachSftpPanel(TabState? state, bool switchToSftpTab)
+    {
         if (SftpPanelHost is null) return;
-        if (selState?.Overlay is null && selState?.Instance?.SftpPanel is { } panel)
+        if (state?.Overlay is null && state?.Instance?.SftpPanel is { } panel)
         {
             SftpPanelHost.Content = panel;
-            LeftTabs.SelectedIndex = 1; // Switch to SFTP tab
+            if (switchToSftpTab)
+                LeftTabs.SelectedIndex = 1; // Switch to SFTP tab
         }
         else
         {
-            SftpPanelHost.Content = new TextBlock
+            SftpPanelHost.Content = BuildSftpPlaceholder(state);
+        }
+    }
+
+    private static TextBlock CreateSftpPlaceholder() => new()
+    {
+        Text = "No SFTP session active",
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+        Foreground = Brushes.Gray,
+        FontSize = 11,
+    };
+
+    /// <summary>
+    /// Placeholder shown in the SFTP tab when no browser is open. For a connected
+    /// SSH session that supports SFTP (i.e. SFTP was deferred or previously closed),
+    /// offers an "Open SFTP browser" button that opens it on demand.
+    /// </summary>
+    private Control BuildSftpPlaceholder(TabState? state)
+    {
+        var inst = state?.Instance;
+        if (state?.Overlay is null && inst is { CanUseSftp: true, IsSftpActive: false })
+        {
+            var btn = new Button
             {
-                Text = "No SFTP session active",
+                Content = "🔌  Open SFTP browser",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Padding = new Thickness(12, 6),
+            };
+            btn.Click += async (_, _) =>
+            {
+                btn.IsEnabled = false;
+                btn.Content = "Connecting…";
+                var ok = await inst.SetSftpEnabledAsync(true);
+                if (!ok)
+                {
+                    btn.IsEnabled = true;
+                    btn.Content = "🔌  Open SFTP browser";
+                    // Panel is re-attached via SftpPanelChanged on success; on failure
+                    // leave the button so the user can retry.
+                }
+            };
+            return new StackPanel
+            {
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                Foreground = Brushes.Gray,
-                FontSize = 11,
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "SFTP is not open for this session.",
+                        Foreground = Brushes.Gray,
+                        FontSize = 11,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                    },
+                    btn,
+                },
             };
         }
+        return CreateSftpPlaceholder();
     }
 
     // -----------------------------------------------------------------------
@@ -1622,14 +1724,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         bool anyHasPanel = _tabStates.Values.Any(s => s.Instance?.SftpPanel != null);
         if (!anyHasPanel)
         {
-            SftpPanelHost.Content = new TextBlock
-            {
-                Text = "No SFTP session active",
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                Foreground = Brushes.Gray,
-                FontSize = 11,
-            };
+            SftpPanelHost.Content = CreateSftpPlaceholder();
             // Switch left panel back to Sessions if SFTP tab was active
             if (LeftTabs?.SelectedIndex == 1)
                 LeftTabs.SelectedIndex = 0;
@@ -1728,6 +1823,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             },
         };
         okBtn.Click += (_, _) => win.Close();
+        win.Opened += (_, _) => okBtn.Focus(NavigationMethod.Tab);
         return win.ShowDialog(this);
     }
 

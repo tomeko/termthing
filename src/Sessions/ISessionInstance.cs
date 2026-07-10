@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using Avalonia.Controls;
 using Iciclecreek.Terminal;
 
@@ -15,8 +16,27 @@ public interface ISessionInstance : IDisposable
     /// <summary>The actual <see cref="TerminalControl"/> inside <see cref="TabContent"/> (null when the session has no terminal).</summary>
     TerminalControl? Terminal { get; }
 
-    /// <summary>Optional SFTP browser panel (null when not applicable).</summary>
+    /// <summary>Optional SFTP browser panel (null when not applicable or not currently open).</summary>
     Control? SftpPanel { get; }
+
+    /// <summary>True when this session can open an SFTP browser on demand after connecting.</summary>
+    bool CanUseSftp => false;
+
+    /// <summary>True when the SFTP browser is currently open.</summary>
+    bool IsSftpActive => SftpPanel != null;
+
+    /// <summary>
+    /// Opens (<paramref name="on"/> = true) or closes the SFTP browser after the
+    /// session has connected. Returns true on success. Default: not supported.
+    /// </summary>
+    Task<bool> SetSftpEnabledAsync(bool on) => Task.FromResult(false);
+
+    /// <summary>
+    /// Raised (on the UI thread) when <see cref="SftpPanel"/> appears or disappears —
+    /// e.g. the user opened/closed SFTP via <see cref="SetSftpEnabledAsync"/>.
+    /// Default: no-op (sessions that never change their panel).
+    /// </summary>
+    event EventHandler? SftpPanelChanged { add { } remove { } }
 
     /// <summary>Current display title (may change after connection via OSC title).</summary>
     string Title { get; }

@@ -6,6 +6,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
+using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using Avalonia.Collections;
 using Renci.SshNet;
@@ -266,6 +267,11 @@ public partial class SftpFileBrowserView : UserControl
         _filesGrid.AddHandler(PointerMovedEvent,    OnFilesGridPointerMoved,    RoutingStrategies.Tunnel);
         _filesGrid.AddHandler(PointerReleasedEvent, OnFilesGridPointerReleased, RoutingStrategies.Tunnel);
 
+        // F5 refresh at the panel level (tunnel) so it works regardless of which
+        // sub-control has focus — the grid-scoped OnFilesGridKeyDown only fires when
+        // a row is focused, which rarely holds (the app focuses the terminal).
+        AddHandler(KeyDownEvent, OnPanelKeyDown, RoutingStrategies.Tunnel);
+
         // Restore persisted column widths
         RestoreColumnWidths();
 
@@ -493,6 +499,15 @@ public partial class SftpFileBrowserView : UserControl
     }
 
     private void OnRefreshClicked(object? sender, RoutedEventArgs e) => Refresh();
+
+    /// <summary>
+    /// Raised when the user clicks the SFTP browser's close (✕) button. The owning
+    /// <c>SshSessionInstance</c> handles it by tearing down the SFTP channel.
+    /// </summary>
+    public event EventHandler? CloseRequested;
+
+    private void OnCloseSftpClicked(object? sender, RoutedEventArgs e)
+        => CloseRequested?.Invoke(this, EventArgs.Empty);
 
     private void OnPathBoxKeyDown(object? sender, KeyEventArgs e)
     {
@@ -916,6 +931,15 @@ public partial class SftpFileBrowserView : UserControl
         catch (Exception ex)
         {
             SetStatus($"Rename failed: {ex.Message}");
+        }
+    }
+
+    private void OnPanelKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F5)
+        {
+            Refresh();
+            e.Handled = true;
         }
     }
 
@@ -1350,8 +1374,8 @@ public partial class SftpFileBrowserView : UserControl
             _                => $"{totalBytes} B",
         };
 
-        var okBtn     = new Button { Content = "Upload", Margin = new Thickness(0, 0, 8, 0) };
-        var cancelBtn = new Button { Content = "Cancel" };
+        var okBtn     = new Button { Content = "Upload", Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+        var cancelBtn = new Button { Content = "Cancel", IsCancel = true };
 
         var win = new Window
         {
@@ -1384,6 +1408,7 @@ public partial class SftpFileBrowserView : UserControl
 
         okBtn.Click     += (_, _) => { confirmed = true;  win.Close(); };
         cancelBtn.Click += (_, _) => { confirmed = false; win.Close(); };
+        win.Opened      += (_, _) => okBtn.Focus();
 
         if (owner != null)
             await win.ShowDialog(owner);
@@ -1595,6 +1620,32 @@ public partial class SftpFileBrowserView : UserControl
         _internalDragSource = entry;
         try
         {
+            // Windows fast path: a virtual-file (delayed-rendering) drag. The file's
+            // bytes are pulled from SFTP only when the drop target asks for them — i.e.
+            // on DROP — so the app doesn't freeze pre-downloading while the mouse is
+            // held. Single files only; directories fall through to the pre-download
+            // path below. DoDragDrop blocks (pumping messages) until the drag ends.
+            if (OperatingSystem.IsWindows() && !entry.IsDirectory)
+            {
+                bool started = false;
+                try
+                {
+                    var remotePath = entry.FullPath;
+                    started = WindowsFileDrag.TryDrag(entry.Name, entry.Size, () =>
+                    {
+                        using var ms = new MemoryStream();
+                        _sftpClient.DownloadFile(remotePath, ms);
+                        return ms.ToArray();
+                    });
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[SFTP] native drag failed, falling back: {ex.Message}");
+                    started = false;
+                }
+                if (started) return;
+            }
+
             SetStatus("Preparing download…");
 
             // Download to a per-entry temp directory so the OS gets a real local file path
@@ -1608,7 +1659,8 @@ public partial class SftpFileBrowserView : UserControl
                 localPath = await Task.Run(() =>
                 {
                     Directory.CreateDirectory(sessionTemp);
-                    return DownloadToTempSync(entry, sessionTemp);
+                    return DownloadToTempSync(entry, sessionTemp,
+                        msg => Dispatcher.UIThread.Post(() => SetStatus(msg)));
                 });
             }
             catch (Exception ex)
@@ -1627,11 +1679,16 @@ public partial class SftpFileBrowserView : UserControl
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel is null) return;
 
-            var storageFile = await topLevel.StorageProvider.TryGetFileFromPathAsync(new Uri(localPath));
-            if (storageFile is null) return;
+            // Directories resolve via TryGetFolderFromPathAsync — TryGetFileFromPathAsync
+            // returns null for a folder, which previously made folder drag-out silently
+            // do nothing after the tree had already been downloaded to temp.
+            IStorageItem? storageItem = entry.IsDirectory
+                ? await topLevel.StorageProvider.TryGetFolderFromPathAsync(new Uri(localPath))
+                : await topLevel.StorageProvider.TryGetFileFromPathAsync(new Uri(localPath));
+            if (storageItem is null) return;
 
             var transfer = new DataTransfer();
-            transfer.Add(DataTransferItem.CreateFile(storageFile));
+            transfer.Add(DataTransferItem.CreateFile(storageItem));
             await DragDrop.DoDragDropAsync(pointerArgs, transfer, DragDropEffects.Copy);
         }
         finally
@@ -1644,9 +1701,11 @@ public partial class SftpFileBrowserView : UserControl
     /// <summary>
     /// Synchronously downloads <paramref name="entry"/> (file or directory tree) into
     /// <paramref name="destDir"/> and returns the path of the created local item.
-    /// Must be called on a background thread.
+    /// Must be called on a background thread. <paramref name="onProgress"/> is invoked
+    /// with a human-readable status string as each file is fetched (marshal to the UI
+    /// thread inside the callback).
     /// </summary>
-    private string DownloadToTempSync(SftpEntry entry, string destDir)
+    private string DownloadToTempSync(SftpEntry entry, string destDir, Action<string>? onProgress)
     {
         var localPath = Path.Combine(destDir, entry.Name);
 
@@ -1663,11 +1722,12 @@ public partial class SftpFileBrowserView : UserControl
                     FullPath    = child.FullName,
                     Size        = child.Length,
                 };
-                DownloadToTempSync(childEntry, localPath);
+                DownloadToTempSync(childEntry, localPath, onProgress);
             }
         }
         else
         {
+            onProgress?.Invoke($"Preparing “{entry.Name}” for drag…");
             using var fs = File.Create(localPath);
             _sftpClient.DownloadFile(entry.FullPath, fs);
         }

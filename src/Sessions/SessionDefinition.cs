@@ -88,7 +88,26 @@ public record SshSettings : SessionSettings
     public int Port { get; init; } = 22;
     public string Username { get; init; } = string.Empty;
     public string? KeyFilePath { get; init; }
+
+    /// <summary>
+    /// When <c>true</c>, the SFTP browser is opened automatically as soon as the
+    /// session connects. When <c>false</c> the user can still open it on demand
+    /// after connecting via the SFTP panel's "Open SFTP" affordance.
+    /// (Serialized name kept as <c>EnableSftp</c> for backwards compatibility.)
+    /// </summary>
     public bool EnableSftp { get; init; }
+
+    /// <summary>
+    /// When <c>true</c>, the terminal does NOT auto-inject shell-integration
+    /// (the OSC 7 <c>PROMPT_COMMAND</c> hook) on the first chunk of PTY output.
+    /// This prevents injected text from landing inside an in-session password /
+    /// passphrase prompt that appears before a real shell prompt. Shell
+    /// integration (used for SFTP directory-follow) is instead injected later,
+    /// when the user explicitly opens the SFTP browser — a point at which the
+    /// session is known to be at a usable shell.
+    /// </summary>
+    public bool DeferInitialization { get; init; }
+
     public bool ShellIntegrationOsc7 { get; init; } = true;
     public string Term { get; init; } = "xterm-256color";
 
@@ -151,6 +170,22 @@ public sealed class SessionDefinition
     public SessionKind Kind { get; init; }
     public Guid? GroupId { get; set; }
     public SessionSettings? Settings { get; set; }
+
+    /// <summary>
+    /// Returns this definition's <see cref="Settings"/>, creating an empty record of
+    /// the correct derived type (and assigning it) when none exists yet. Lets
+    /// per-session preferences — e.g. the paste-confirmation "remember for this
+    /// session" flags — be recorded on definitions that were never given explicit
+    /// settings, instead of being silently dropped.
+    /// </summary>
+    public SessionSettings EnsureSettings()
+        => Settings ??= Kind switch
+        {
+            SessionKind.Local  => new LocalSettings(),
+            SessionKind.Ssh    => new SshSettings(),
+            SessionKind.Serial => new SerialSettings(),
+            _                  => new LocalSettings(),
+        };
 
     /// <summary>
     /// <see cref="Material.Icons.MaterialIconKind"/> enum member name

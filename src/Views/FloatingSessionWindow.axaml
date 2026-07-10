@@ -8,6 +8,18 @@
         MinWidth="480" MinHeight="320"
         WindowStartupLocation="CenterScreen">
 
+    <Window.Styles>
+        <!-- Active-pane indicator, mirroring the main window: accent border on the
+             section holding keyboard focus (SFTP panel vs. terminal). -->
+        <Style Selector="Border.pane">
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+        </Style>
+        <Style Selector="Border.pane:focus-within">
+            <Setter Property="BorderBrush" Value="#0078d4"/>
+        </Style>
+    </Window.Styles>
+
     <DockPanel>
 
         <!-- Toolbar: session title + Dock Back button -->
@@ -35,10 +47,11 @@
         <Grid x:Name="ContentGrid" ColumnDefinitions="260,4,*">
 
             <!-- SFTP panel — hidden by default, shown when session has SFTP -->
-            <ContentControl x:Name="SftpHost"
-                            Grid.Column="0"
-                            IsVisible="False"
-                            Background="#252526"/>
+            <Border Grid.Column="0" Classes="pane">
+                <ContentControl x:Name="SftpHost"
+                                IsVisible="False"
+                                Background="#252526"/>
+            </Border>
 
             <GridSplitter x:Name="SftpSplitter"
                           Grid.Column="1"
@@ -49,8 +62,9 @@
                           DragCompleted="OnSftpSplitterDragCompleted"/>
 
             <!-- Terminal host -->
-            <ContentControl x:Name="TerminalHost"
-                            Grid.Column="2"/>
+            <Border Grid.Column="2" Classes="pane">
+                <ContentControl x:Name="TerminalHost"/>
+            </Border>
         </Grid>
 
     </DockPanel>
