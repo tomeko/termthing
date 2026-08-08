@@ -27,7 +27,11 @@ Yet another terminal emulator thing. Desktop, portable, tab and floating window 
 
 ## Running
 
-Download the latest release and run the executable directly. Requires the .NET 10 runtime.
+Download the latest release and run the executable directly (Requires .NET 10 runtime)
+
+## Updating
+
+Built-in updater will notify/pull/update from github releases
 
 ## Building
 
