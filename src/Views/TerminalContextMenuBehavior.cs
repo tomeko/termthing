@@ -152,7 +152,15 @@ public static class TerminalContextMenuBehavior
 
         var transfer = await clipboard.TryGetDataAsync();
         if (transfer == null) return;
-        var text = await transfer.TryGetTextAsync();
+        var rawText = await transfer.TryGetTextAsync();
+        if (string.IsNullOrEmpty(rawText)) return;
+
+        // Confirm against what will actually be sent, not what is on the clipboard.
+        // PasteAsync sanitizes on its way to the PTY, so previewing the raw text would
+        // show the user something different from what runs — and the newline guard
+        // below would miss a Unicode line separator that sanitizing turns into a real
+        // newline.
+        var text = PasteSanitizer.Sanitize(rawText, view.PasteSanitization);
         if (string.IsNullOrEmpty(text)) return;
 
         _contexts.TryGetValue(tc, out var ctx);

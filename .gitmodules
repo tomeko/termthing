@@ -1,3 +1,6 @@
 [submodule "Iciclecreek.Avalonia.Terminal"]
 	path = Iciclecreek.Avalonia.Terminal
 	url = https://github.com/tomeko/Iciclecreek.Avalonia.Terminal.git
+[submodule "XTerm.NET"]
+	path = XTerm.NET
+	url = https://github.com/tomeko/XTerm.NET.git

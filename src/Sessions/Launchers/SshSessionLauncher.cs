@@ -609,19 +609,45 @@ internal sealed class SshSessionInstance : ISessionInstance
     }
 
     /// <summary>
-    /// Injects the OSC 7 <c>PROMPT_COMMAND</c> shell-integration hook (once) so the
-    /// terminal reports its working directory. Only fires after the shell stream is
-    /// ready (<see cref="MarkReadyForShellIntegration"/>) and when OSC 7 is enabled
-    /// for this session. The terminal sends it on the next chunk of PTY output.
+    /// The OSC 7 shell-integration hook, written to run under whichever shell the
+    /// remote account happens to use.
+    /// <para>
+    /// Three things make this fiddly. <c>PROMPT_COMMAND</c> is a bash feature — zsh
+    /// ignores it entirely and reports the working directory from
+    /// <c>precmd_functions</c> instead. zsh also leaves <c>INTERACTIVE_COMMENTS</c>
+    /// off by default, so a trailing <c>#</c> comment is not a comment at all and the
+    /// shell answers with <c>command not found: #</c>; the sentinel therefore rides on
+    /// a variable assignment, which every shell accepts. And the zsh array-append
+    /// syntax has to sit inside <c>eval</c>, because a plain <c>sh</c> parses the whole
+    /// line before running it and would reject <c>+=(...)</c> even in the branch it
+    /// never takes.
+    /// </para>
+    /// <para>
+    /// The bash branch prepends rather than assigns, so an existing
+    /// <c>PROMPT_COMMAND</c> from the user's own profile keeps working.
+    /// </para>
+    /// </summary>
+    private const string Osc7ShellIntegrationCommand =
+        "__ICTERMINT__=1; " +
+        "__ictermint_cwd() { printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-${HOST:-}}\" \"$PWD\"; }; " +
+        "if [ -n \"${ZSH_VERSION:-}\" ]; then " +
+            "eval 'typeset -ga precmd_functions; precmd_functions+=(__ictermint_cwd)'; " +
+        "elif [ -n \"${BASH_VERSION:-}\" ]; then " +
+            "PROMPT_COMMAND=\"__ictermint_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; " +
+        "fi";
+
+    /// <summary>
+    /// Injects the OSC 7 shell-integration hook (once) so the terminal reports its
+    /// working directory. Only fires after the shell stream is ready
+    /// (<see cref="MarkReadyForShellIntegration"/>) and when OSC 7 is enabled for this
+    /// session. The terminal sends it on the next chunk of PTY output.
     /// </summary>
     private void EnableShellIntegration()
     {
         if (_shellIntegrationInjected || !_readyForShellIntegration) return;
         if (_definition?.Settings is SshSettings ss && !ss.ShellIntegrationOsc7) return;
         _shellIntegrationInjected = true;
-        Dispatcher.UIThread.Post(() =>
-            _tc.ShellIntegrationCommand =
-                "PROMPT_COMMAND='printf \"\\033]7;file://${HOSTNAME}${PWD}\\007\"' # __ICTERMINT__");
+        Dispatcher.UIThread.Post(() => _tc.ShellIntegrationCommand = Osc7ShellIntegrationCommand);
     }
 
     /// <summary>

@@ -1186,11 +1186,34 @@ public partial class SftpFileBrowserView : UserControl
         }
     }
 
+    /// <summary>
+    /// Describes what the drag source is actually offering. Drag-and-drop from the OS is
+    /// the one path whose behaviour is decided entirely by the platform backend, so when
+    /// a drop does nothing this is the only way to see whether the payload never arrived
+    /// as files or whether it arrived and we rejected it.
+    /// </summary>
+    private static string DescribeOfferedFormats(DragEventArgs e)
+    {
+        try
+        {
+            var names = e.DataTransfer.Formats.Select(f => f.ToString()).ToList();
+            return names.Count == 0 ? "(none offered)" : string.Join(", ", names);
+        }
+        catch (Exception ex)
+        {
+            return $"(could not enumerate: {ex.GetType().Name})";
+        }
+    }
+
     private void OnDragOver(object? sender, DragEventArgs e)
     {
         e.Handled = true;
         if (!e.DataTransfer.Contains(DataFormat.File))
         {
+            // Not a file drag as far as this platform's backend is concerned. Surface what
+            // it *did* offer: on X11/Wayland a file manager may hand over only URI-list or
+            // toolkit-private types, which is invisible from the Windows side.
+            SetStatus($"Drag ignored — no file data. Offered: {DescribeOfferedFormats(e)}");
             e.DragEffects = DragDropEffects.None;
             ClearUploadDragState();
             return;
@@ -1280,9 +1303,23 @@ public partial class SftpFileBrowserView : UserControl
             return;
         }
 
-        if (!e.DataTransfer.Contains(DataFormat.File)) return;
+        // Each of the bail-outs below reports why. They are all indistinguishable to the
+        // user otherwise — the drop simply does nothing — which makes an upload that
+        // silently fails on one platform impossible to diagnose from a bug report.
+        if (!e.DataTransfer.Contains(DataFormat.File))
+        {
+            SetStatus($"Drop ignored — no file data. Offered: {DescribeOfferedFormats(e)}");
+            return;
+        }
+
         var storageItems = e.DataTransfer.TryGetFiles()?.ToList();
-        if (storageItems == null || storageItems.Count == 0) return;
+        if (storageItems == null || storageItems.Count == 0)
+        {
+            SetStatus(storageItems == null
+                ? "Drop failed — the drag source offered files but returned none."
+                : "Drop failed — the drag contained an empty file list.");
+            return;
+        }
 
         // Resolve to local file system paths
         var localPaths = new List<string>();
@@ -1294,7 +1331,14 @@ public partial class SftpFileBrowserView : UserControl
             if (!string.IsNullOrWhiteSpace(lp))
                 localPaths.Add(lp);
         }
-        if (localPaths.Count == 0) return;
+        if (localPaths.Count == 0)
+        {
+            // Files arrived but none resolved to a local path — e.g. a file manager
+            // handing over a non-file URI (trash:/, sftp://, a portal handle).
+            var uris = string.Join(", ", storageItems.Select(i => i.Path.ToString()));
+            SetStatus($"Drop ignored — no local paths in: {uris}");
+            return;
+        }
 
         // Local-only scan: count files and compute size for the confirmation prompt
         var preview = new List<TransferJob>();
@@ -1304,7 +1348,11 @@ public partial class SftpFileBrowserView : UserControl
                 ScanLocalUpload(lp, destDir, preview);
         });
 
-        if (preview.Count == 0) return;
+        if (preview.Count == 0)
+        {
+            SetStatus($"Nothing to upload — could not read: {string.Join(", ", localPaths)}");
+            return;
+        }
 
         // Confirmation
         var host = TopLevel.GetTopLevel(this) as Window;
