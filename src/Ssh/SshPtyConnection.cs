@@ -1,7 +1,6 @@
 using Porta.Pty;
 using Renci.SshNet;
 using System.IO;
-using System.Reflection;
 using System.Threading;
 
 namespace TermThing.Ssh;
@@ -114,27 +113,9 @@ public sealed class SshPtyConnection : IPtyConnection
 
     public void Resize(int cols, int rows)
     {
-        // SSH.NET doesn't expose a public window-resize API on ShellStream, so we reach
-        // through to the underlying channel via reflection.
         try
         {
-            var flags = BindingFlags.NonPublic | BindingFlags.Instance;
-            object? channel = null;
-
-            foreach (var name in new[] { "_channel", "Channel", "_session" })
-            {
-                var field = typeof(ShellStream).GetField(name, flags);
-                if (field != null) { channel = field.GetValue(_shell); break; }
-            }
-
-            if (channel == null) return;
-
-            var method = channel.GetType().GetMethod("SendWindowChangeRequest",
-                BindingFlags.Public | BindingFlags.Instance,
-                binder: null,
-                types: [typeof(uint), typeof(uint), typeof(uint), typeof(uint)],
-                modifiers: null);
-            method?.Invoke(channel, [(uint)cols, (uint)rows, 0u, 0u]);
+            _shell.ChangeWindowSize((uint)cols, (uint)rows, 0, 0);
         }
         catch
         {
