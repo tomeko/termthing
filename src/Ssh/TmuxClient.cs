@@ -130,10 +130,30 @@ public static class TmuxClient
         return exit == 0 ? null : (string.IsNullOrWhiteSpace(output) ? $"tmux exited with {exit}" : output.Trim());
     }
 
+    /// <summary>
+    /// An exec-channel command running <paramref name="script"/> under <c>sh -c</c> with the
+    /// extended PATH. A script that ends in a long-running program should <c>exec</c> it.
+    /// </summary>
+    public static SshCommand CreateCommand(SshClient client, string script) =>
+        client.CreateCommand("sh -c " + Quote(PathPrefix + script));
+
+    /// <summary>
+    /// True for tmux 3.2 and later (<c>tmux 3.2</c>, <c>tmux 3.3a</c>, <c>tmux next-3.5</c>):
+    /// control mode with flow control and the notifications TermThing relies on.
+    /// </summary>
+    public static bool SupportsControlMode(string? version)
+    {
+        if (version is null) return false;
+        var m = System.Text.RegularExpressions.Regex.Match(version, @"(\d+)\.(\d+)");
+        if (!m.Success) return version.Contains("master", StringComparison.Ordinal);
+        int major = int.Parse(m.Groups[1].Value), minor = int.Parse(m.Groups[2].Value);
+        return major > 3 || (major == 3 && minor >= 2);
+    }
+
     private static (int Exit, string Output) Run(SshClient client, string script)
     {
         if (!client.IsConnected) return (-1, string.Empty);
-        using var cmd = client.CreateCommand("sh -c " + Quote(PathPrefix + script));
+        using var cmd = CreateCommand(client, script);
         cmd.CommandTimeout = Timeout;
         var output = cmd.Execute();
         return (cmd.ExitStatus ?? -1, output);

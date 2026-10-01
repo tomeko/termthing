@@ -113,7 +113,7 @@ public partial class FloatingSessionWindow : Window
     }
 
     private void UpdateSplitButtons() =>
-        SplitRightButton.IsVisible = SplitDownButton.IsVisible = _panes() is not null;
+        SplitRightButton.IsVisible = SplitDownButton.IsVisible = _panes() is { CanSplit: true };
 
     private void OnWindowActivated(object? sender, EventArgs e)
     {

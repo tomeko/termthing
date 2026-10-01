@@ -11,6 +11,7 @@ using TermThing.Configuration;
 using TermThing.Editor;
 using TermThing.Panes;
 using TermThing.Ssh;
+using TermThing.Tmux;
 using TermThing.Views;
 
 namespace TermThing.Sessions.Launchers;
@@ -32,9 +33,21 @@ public sealed class SshSessionLauncher : ISessionLauncher
 
     public SessionKind Kind => SessionKind.Ssh;
 
+    public Task<ISessionInstance> LaunchAsync(
+        SessionDefinition definition,
+        ISessionPromptHost promptHost,
+        CancellationToken cancellationToken = default) =>
+        LaunchAsync(definition, promptHost, tmuxControlSession: null, cancellationToken);
+
+    /// <summary>
+    /// Connects like <see cref="LaunchAsync(SessionDefinition, ISessionPromptHost, CancellationToken)"/>.
+    /// With <paramref name="tmuxControlSession"/>, the tab shows that tmux session through
+    /// control mode instead of opening a shell (the session is created if it doesn't exist).
+    /// </summary>
     public async Task<ISessionInstance> LaunchAsync(
         SessionDefinition definition,
         ISessionPromptHost promptHost,
+        string? tmuxControlSession,
         CancellationToken cancellationToken = default)
     {
         var settings = definition.Settings as SshSettings
@@ -332,6 +345,14 @@ public sealed class SshSessionLauncher : ISessionLauncher
             ? await sftpConnector(cancellationToken)
             : null;
 
+        if (!string.IsNullOrEmpty(tmuxControlSession))
+        {
+            var tmuxInstance = new SshSessionInstance(null, definition.Name, client, eagerSftp, sftpConnector, chainResult,
+                _editors, definition, _saveConfig, proxyTransport, tmuxControlSession);
+            await tmuxInstance.StartTmuxControlAsync();
+            return tmuxInstance;
+        }
+
         // ----------------------------------------------------------------
         // Build terminal control and launch.
         // ----------------------------------------------------------------
@@ -460,7 +481,7 @@ internal sealed record SftpConnection(
 
 internal sealed class SshSessionInstance : ISessionInstance
 {
-    private readonly TerminalControl _tc;
+    private readonly TerminalControl? _tc;   // the first pane's terminal; null in tmux control mode
     private readonly Grid _hostPanel;
     private readonly ContentControl _sysmonSlot;
     private readonly ContentControl _dockerMonSlot;
@@ -497,7 +518,8 @@ internal sealed class SshSessionInstance : ISessionInstance
 
     // Split panes: each pane is its own shell channel on _client. Keyed by the pane's
     // terminal; holds the connection (ours to dispose) and a way to type into the shell.
-    private readonly PaneLayoutView _panes;
+    private readonly PaneLayoutView? _panes;   // null in tmux control mode
+    private readonly PaneTitles _titles;
     private sealed class PaneShell
     {
         public SshPtyConnection? Connection;
@@ -515,8 +537,14 @@ internal sealed class SshSessionInstance : ISessionInstance
     private volatile TmuxOwnClient? _tmuxOwn;
     private string? _pendingTmuxAttach;
 
+    // tmux control mode: the tab shows a tmux session's windows and panes natively
+    // instead of a shell (no shell channel at all).
+    private readonly TmuxControlSession? _tmuxControl;
+
+    /// <param name="tc">The first pane's terminal; null for tmux control mode.</param>
+    /// <param name="tmuxControlSession">With a null <paramref name="tc"/>: the tmux session to show.</param>
     public SshSessionInstance(
-        TerminalControl  tc,
+        TerminalControl? tc,
         string           title,
         SshClient        client,
         SftpConnection?  eagerSftp,
@@ -525,7 +553,8 @@ internal sealed class SshSessionInstance : ISessionInstance
         EditorRegistry?  editors             = null,
         SessionDefinition? definition        = null,
         Action?          saveConfig          = null,
-        IAsyncDisposable? proxyTransport     = null)
+        IAsyncDisposable? proxyTransport     = null,
+        string?          tmuxControlSession  = null)
     {
         _chain = chain;
         _tc = tc;
@@ -535,7 +564,8 @@ internal sealed class SshSessionInstance : ISessionInstance
         _definition = definition;
         _saveConfig = saveConfig;
         _proxyTransport = proxyTransport;
-        Title = title;
+        _titles = new PaneTitles(tc is null ? $"{title} · tmux {tmuxControlSession}" : title, () => Terminal);
+        _titles.Changed += (_, _) => TitleChanged?.Invoke(this, EventArgs.Empty);
 
         // Wrap the terminal in a Grid so DockerMon and Sysmon rows can be
         // docked below with a resizable GridSplitter above DockerMon.
@@ -556,39 +586,55 @@ internal sealed class SshSessionInstance : ISessionInstance
         _hostPanel.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
         _hostPanel.RowDefinitions.Add(_dockerMonRowDef);
         _hostPanel.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
-        _panes = new PaneLayoutView(tc)
-        {
-            CellSizeProvider = () => new Avalonia.Size(Terminal?.CharWidth ?? 0, Terminal?.CharHeight ?? 0),
-            SplitRequested   = SplitPane,
-            CloseRequested   = pane => ClosePane((TerminalControl)pane),
-        };
-        // SFTP follows the active pane: on a switch, show the folder that pane is in.
-        _panes.ActivePaneChanged += (_, _) =>
-        {
-            if (Terminal?.CurrentDirectory is { Length: > 0 } dir)
-                _sftpView?.OnTerminalDirectoryChanged(dir);
-        };
-        _paneShells[tc] = new PaneShell();
 
-        Grid.SetRow(_panes, 0);
+        Control content;
+        if (tc is not null)
+        {
+            _panes = new PaneLayoutView(tc)
+            {
+                CellSizeProvider = () => new Avalonia.Size(Terminal?.CharWidth ?? 0, Terminal?.CharHeight ?? 0),
+                SplitRequested   = SplitPane,
+                CloseRequested   = pane => ClosePane((TerminalControl)pane),
+            };
+            // SFTP follows the active pane: on a switch, show the folder that pane is in.
+            _panes.ActivePaneChanged += (_, _) =>
+            {
+                _titles.Refresh();
+                if (Terminal?.CurrentDirectory is { Length: > 0 } dir)
+                    _sftpView?.OnTerminalDirectoryChanged(dir);
+            };
+            _paneShells[tc] = new PaneShell();
+            _titles.Watch(tc);
+            WatchDirectory(tc);
+            content = _panes;
+        }
+        else
+        {
+            var defn = definition ?? throw new ArgumentNullException(nameof(definition));
+            _tmuxControl = new TmuxControlSession(client, tmuxControlSession
+                ?? throw new ArgumentNullException(nameof(tmuxControlSession)),
+                () => TerminalFactory.Create(defn, saveConfig));
+            _tmuxControl.TerminalAdded += _titles.Watch;
+            _tmuxControl.TerminalRemoved += _titles.Forget;
+            _tmuxControl.ActivePaneChanged += (_, _) => _titles.Refresh();
+            _tmuxControl.Ended += OnTmuxControlEnded;
+            // SFTP follows the active pane's folder, which tmux reports itself (no OSC 7 needed).
+            _tmuxControl.ActiveDirectoryChanged += dir => _sftpView?.OnTerminalDirectoryChanged(dir);
+            content = _tmuxControl.View;
+        }
+
+        Grid.SetRow(content, 0);
         Grid.SetRow(_dockerSplitter, 1);
         Grid.SetRow(_dockerMonSlot, 2);
         Grid.SetRow(_sysmonSlot, 3);
-        _hostPanel.Children.Add(_panes);
+        _hostPanel.Children.Add(content);
         _hostPanel.Children.Add(_dockerSplitter);
         _hostPanel.Children.Add(_dockerMonSlot);
         _hostPanel.Children.Add(_sysmonSlot);
 
-        WatchDirectory(tc);
-
         // Eager open (SFTP requested at connect and initialization not deferred).
         if (eagerSftp is not null)
             AttachSftp(eagerSftp);
-
-        TerminalView.AddTitleChangedHandler(tc, (_, e) =>
-        {
-            if (!e.Handled) { Title = e.Title; e.Handled = true; }
-        });
     }
 
     /// <summary>
@@ -823,6 +869,35 @@ internal sealed class SshSessionInstance : ISessionInstance
             _pendingTmuxAttach = session;
     }
 
+    /// <summary>The tmux session this tab shows through control mode, or null for a shell tab.</summary>
+    public string? TmuxControlSession => _tmuxControl?.SessionName;
+
+    /// <summary>Why the session ended, when there is something to tell (e.g. tmux's exit reason).</summary>
+    public string? EndMessage { get; private set; }
+
+    /// <summary>Starts control mode; returns once the session's windows are loaded.</summary>
+    internal async Task StartTmuxControlAsync()
+    {
+        if (_tmuxControl is null) return;
+        try { await _tmuxControl.StartAsync(); }
+        catch
+        {
+            Kill();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The control client ended. A dropped connection is a disconnect like any other.
+    /// Otherwise tmux said why (detached, session killed, server exited): show that.
+    /// </summary>
+    private void OnTmuxControlEnded(string? reason)
+    {
+        if (_client.IsConnected && !string.IsNullOrEmpty(reason))
+            EndMessage = "tmux: " + reason;
+        FireSessionEnded();
+    }
+
     // -----------------------------------------------------------------------
     // Post-connect SFTP open/close
     // -----------------------------------------------------------------------
@@ -896,6 +971,7 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     internal void OnPtyConnectionReady(SshPtyConnection connection)
     {
+        if (_tc is null) return;
         _connection = connection;
         _paneShells[_tc].Connection = connection;
 
@@ -923,7 +999,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         Dispatcher.UIThread.Post(() =>
         {
             if (!_paneShells.ContainsKey(tc)) return;   // already closed from the UI
-            if (_panes.PaneCount <= 1) FireSessionEnded();
+            if (_panes is not { PaneCount: > 1 }) FireSessionEnded();
             else ClosePane(tc);
         });
     }
@@ -954,7 +1030,8 @@ internal sealed class SshSessionInstance : ISessionInstance
 
     /// <summary>Types a line into the active pane's shell (after Ctrl+U). Null until that shell is up.</summary>
     private Action<string>? ShellCommand =>
-        Terminal is { } t && _paneShells.TryGetValue(t, out var pane) ? pane.Send : null;
+        _tmuxControl is { } tmux ? line => tmux.SendToActivePane("\x15" + line + "\r")
+        : Terminal is { } t && _paneShells.TryGetValue(t, out var pane) ? pane.Send : null;
 
     private void SendToActiveShell(string line) => ShellCommand?.Invoke(line);
 
@@ -979,13 +1056,14 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     private async void SplitPane(SplitAxis axis)
     {
-        if (_connectionEnded || !_client.IsConnected || _definition is null) return;
+        if (_connectionEnded || !_client.IsConnected || _definition is null || _panes is null) return;
         var startIn = Terminal?.CurrentDirectory;
 
         var tc = TerminalFactory.Create(_definition, _saveConfig);
         tc.Process = string.Empty;
         if (!_panes.AddPane(tc, axis)) return;
         _paneShells[tc] = new PaneShell();
+        _titles.Watch(tc);
         WatchDirectory(tc);
 
         try
@@ -1030,7 +1108,8 @@ internal sealed class SshSessionInstance : ISessionInstance
     private void ClosePane(TerminalControl tc)
     {
         if (!_paneShells.Remove(tc, out var pane)) return;
-        _panes.RemovePane(tc);
+        _panes?.RemovePane(tc);
+        _titles.Forget(tc);
         try { tc.Kill(); } catch { }
         try { pane.Connection?.Dispose(); } catch { }
     }
@@ -1041,15 +1120,17 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     internal void SetShellCommand(Action<string> sendCommand)
     {
-        _paneShells[_tc].Send = sendCommand;
+        if (_tc is not null) _paneShells[_tc].Send = sendCommand;
     }
 
     public Control TabContent => _hostPanel;
-    public TerminalControl? Terminal => _panes.ActivePane as TerminalControl;
-    public IReadOnlyList<TerminalControl> Terminals => [.. _panes.Panes.OfType<TerminalControl>()];
-    public PaneLayoutView? Panes => _panes;
+    public TerminalControl? Terminal => _tmuxControl?.ActiveTerminal ?? _panes?.ActivePane as TerminalControl;
+    public IReadOnlyList<TerminalControl> Terminals =>
+        _tmuxControl?.Terminals ?? [.. _panes!.Panes.OfType<TerminalControl>()];
+    public PaneLayoutView? Panes => _tmuxControl is null ? _panes : _tmuxControl.ActivePanes;
     public Control? SftpPanel => _sftpView;
-    public string Title { get; private set; }
+    public string Title => _titles.Current;
+    public event EventHandler? TitleChanged;
     public event EventHandler? SessionEnded;
 
     // -----------------------------------------------------------------------
@@ -1184,6 +1265,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         // Stop pollers and close tail windows first so background exec channels
         // don't try to read from a torn-down client.
         try { _tmuxTimer?.Dispose();       } catch { }
+        try { _tmuxControl?.Dispose();     } catch { }
         try { _sysmonPoller?.Dispose();    } catch { }
         try { _dockerMonPoller?.Dispose(); } catch { }
         foreach (var w in _tailWindows.Values.ToArray())

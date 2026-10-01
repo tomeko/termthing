@@ -88,6 +88,32 @@ public sealed class PaneLayout
 
     public LayoutNode? Find(int paneId) => Root.Leaves().FirstOrDefault(l => l.PaneId == paneId);
 
+    /// <summary>
+    /// When <paramref name="other"/> has the same tree (axes, child counts, pane ids),
+    /// copies its sizes and positions into this layout's nodes and returns true; the
+    /// nodes themselves stay, so anything holding on to them (divider bars) stays valid.
+    /// </summary>
+    public bool TryUpdateGeometry(PaneLayout other)
+    {
+        if (!SameShape(Root, other.Root)) return false;
+        CopyGeometry(Root, other.Root);
+        return true;
+
+        static bool SameShape(LayoutNode a, LayoutNode b) =>
+            a.IsLeaf == b.IsLeaf
+            && (a.IsLeaf
+                ? a.PaneId == b.PaneId
+                : a.Axis == b.Axis && a.Children.Count == b.Children.Count
+                  && a.Children.Zip(b.Children).All(p => SameShape(p.First, p.Second)));
+
+        static void CopyGeometry(LayoutNode to, LayoutNode from)
+        {
+            to.X = from.X; to.Y = from.Y; to.Width = from.Width; to.Height = from.Height;
+            for (int i = 0; i < to.Children.Count; i++) CopyGeometry(to.Children[i], from.Children[i]);
+            if (!to.IsLeaf) RecomputeShares(to);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Split / remove
     // -----------------------------------------------------------------------

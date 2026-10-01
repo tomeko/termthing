@@ -58,17 +58,16 @@ internal sealed class LocalSessionInstance : ISessionInstance
 {
     private readonly Func<string?, TerminalControl> _createTerminal;
     private readonly PaneLayoutView _panes;
+    private readonly PaneTitles _titles;
 
     public LocalSessionInstance(Func<string?, TerminalControl> createTerminal, string title)
     {
         _createTerminal = createTerminal;
-        Title = title;
+        _titles = new PaneTitles(title, () => Terminal);
+        _titles.Changed += (_, _) => TitleChanged?.Invoke(this, EventArgs.Empty);
 
         var first = createTerminal(null);
-        TerminalView.AddTitleChangedHandler(first, (_, e) =>
-        {
-            if (!e.Handled) { Title = e.Title; e.Handled = true; }
-        });
+        _titles.Watch(first);
 
         _panes = new PaneLayoutView(first)
         {
@@ -76,6 +75,7 @@ internal sealed class LocalSessionInstance : ISessionInstance
             SplitRequested   = Split,
             CloseRequested   = pane => ClosePane((TerminalControl)pane),
         };
+        _panes.ActivePaneChanged += (_, _) => _titles.Refresh();
         WatchExit(first);
     }
 
@@ -84,13 +84,15 @@ internal sealed class LocalSessionInstance : ISessionInstance
     public IReadOnlyList<TerminalControl> Terminals => [.. _panes.Panes.OfType<TerminalControl>()];
     public PaneLayoutView? Panes => _panes;
     public Control? SftpPanel => null;
-    public string Title { get; private set; }
+    public string Title => _titles.Current;
+    public event EventHandler? TitleChanged;
     public event EventHandler? SessionEnded;
 
     private void Split(SplitAxis axis)
     {
         var startIn = Terminal?.CurrentDirectory;
         var tc = _createTerminal(startIn);
+        _titles.Watch(tc);
         WatchExit(tc);
         if (!_panes.AddPane(tc, axis))
             try { tc.Kill(); } catch { }
@@ -102,7 +104,7 @@ internal sealed class LocalSessionInstance : ISessionInstance
         tc.ProcessExited += (_, _) => Dispatcher.UIThread.Post(() =>
         {
             if (!_panes.Panes.Contains(tc)) return;   // already closed from the UI
-            if (_panes.PaneCount > 1) _panes.RemovePane(tc);
+            if (_panes.PaneCount > 1) { _panes.RemovePane(tc); _titles.Forget(tc); }
             else SessionEnded?.Invoke(this, EventArgs.Empty);
         });
     }
@@ -110,6 +112,7 @@ internal sealed class LocalSessionInstance : ISessionInstance
     private void ClosePane(TerminalControl tc)
     {
         if (!_panes.RemovePane(tc)) return;
+        _titles.Forget(tc);
         try { tc.Kill(); } catch { }
     }
 

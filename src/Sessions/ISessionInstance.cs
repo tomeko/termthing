@@ -51,8 +51,11 @@ public interface ISessionInstance : IDisposable
     /// </summary>
     event EventHandler? SftpPanelChanged { add { } remove { } }
 
-    /// <summary>Current display title (may change after connection via OSC title).</summary>
+    /// <summary>Current display title: the active pane's OSC title, else the session's name.</summary>
     string Title { get; }
+
+    /// <summary>Raised (on the UI thread) when <see cref="Title"/> changes. Default: never.</summary>
+    event EventHandler? TitleChanged { add { } remove { } }
 
     /// <summary>
     /// Raised when the underlying process/connection terminates.

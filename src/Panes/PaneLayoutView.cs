@@ -23,6 +23,14 @@ namespace TermThing.Panes;
 /// add or remove other children, or hide panes. A TerminalControl that is detached
 /// from the visual tree kills its process, so this matters.
 /// </para>
+/// <para>
+/// In tmux control mode (<see cref="IsExternalLayout"/>) tmux owns the layout: the view
+/// shows what <see cref="ApplyLayout"/> hands it at exactly one character cell per cell,
+/// anchored top-left, and never changes the layout itself. Resizing, equalizing and
+/// zooming become requests (<see cref="ResizeRequested"/>, <see cref="DividerMoveRequested"/>,
+/// <see cref="EqualizeRequested"/>, <see cref="ZoomRequested"/>) and tmux's answer comes
+/// back through <see cref="ApplyLayout"/> and <see cref="SetZoomedPane"/>.
+/// </para>
 /// </summary>
 public sealed class PaneLayoutView : Panel
 {
@@ -50,6 +58,22 @@ public sealed class PaneLayoutView : Panel
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
     }
 
+    /// <summary>
+    /// A view whose layout belongs to someone else (tmux). <paramref name="createPane"/>
+    /// makes the control for a pane id the first time it appears.
+    /// </summary>
+    public PaneLayoutView(PaneLayout layout, Func<int, Control> createPane)
+    {
+        IsExternalLayout = true;
+        _layout = layout;
+        ClipToBounds = true;
+        AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+        ApplyLayout(layout, createPane);
+    }
+
+    /// <summary>True when the layout comes from <see cref="ApplyLayout"/> (tmux) rather than this view.</summary>
+    public bool IsExternalLayout { get; }
+
     public PaneLayout Layout => _layout;
     public int PaneCount => _chrome.Count;
     public IEnumerable<Control> Panes => _ids.Keys;
@@ -68,11 +92,93 @@ public sealed class PaneLayoutView : Panel
     /// <summary>Keyboard/menu asked to close a pane. The owner kills it and calls <see cref="RemovePane"/>.</summary>
     public Action<Control>? CloseRequested { get; set; }
 
+    /// <summary>External layout: resize pane <c>id</c> towards a direction by some cells (tmux <c>resize-pane -L/R/U/D</c>).</summary>
+    public Action<int, PaneDirection, int>? ResizeRequested { get; set; }
+
+    /// <summary>External layout: a divider was dragged; child <c>index</c> of <c>split</c> should become <c>size</c> cells along the split's axis.</summary>
+    public Action<LayoutNode, int, int>? DividerMoveRequested { get; set; }
+
+    /// <summary>External layout: a divider was double-clicked; make the children of <c>split</c> equal.</summary>
+    public Action<LayoutNode>? EqualizeRequested { get; set; }
+
+    /// <summary>External layout: toggle zoom of pane <c>id</c> (tmux <c>resize-pane -Z</c>).</summary>
+    public Action<int>? ZoomRequested { get; set; }
+
     // -----------------------------------------------------------------------
     // Structure
     // -----------------------------------------------------------------------
 
-    public bool CanSplitActive(SplitAxis axis) => _layout.CanSplit(_activeId, axis);
+    /// <summary>True when the owner can split panes at all (<see cref="SplitRequested"/> is set).</summary>
+    public bool CanSplit => SplitRequested is not null;
+
+    public bool CanSplitActive(SplitAxis axis) => CanSplit && _layout.CanSplit(_activeId, axis);
+
+    /// <summary>The pane id of <paramref name="pane"/>, or null when it isn't in this view.</summary>
+    public int? PaneIdOf(Control pane) => _ids.TryGetValue(pane, out var id) ? id : null;
+
+    /// <summary>The control showing pane <paramref name="id"/>, or null.</summary>
+    public Control? PaneById(int id) => _chrome.TryGetValue(id, out var chrome) ? chrome.Child : null;
+
+    /// <summary>
+    /// Replaces the layout (tmux <c>%layout-change</c>), keeping the controls of panes
+    /// that are still there. New pane ids get a control from <paramref name="createPane"/>.
+    /// Returns the controls of panes that are gone; they are already detached.
+    /// </summary>
+    public IReadOnlyList<Control> ApplyLayout(PaneLayout layout, Func<int, Control> createPane)
+    {
+        var ids = layout.Leaves().Select(l => l.PaneId).ToHashSet();
+        // Same panes in the same arrangement (a resize): update sizes in place, so the
+        // divider bars, and a drag in progress on one of them, survive.
+        if (_chrome.Count > 0 && ids.SetEquals(_chrome.Keys) && _layout.TryUpdateGeometry(layout))
+        {
+            InvalidateMeasure();
+            return [];
+        }
+
+        var removed = new List<Control>();
+        bool hadFocus = false;
+        foreach (var id in _chrome.Keys.Where(id => !ids.Contains(id)).ToList())
+        {
+            var chrome = _chrome[id];
+            var pane = chrome.Child!;
+            hadFocus |= pane.IsKeyboardFocusWithin;
+            _chrome.Remove(id);
+            _ids.Remove(pane);
+            _mru.Remove(id);
+            Children.Remove(chrome);
+            chrome.Child = null;
+            removed.Add(pane);
+        }
+
+        _layout = layout;
+        foreach (var id in ids)
+        {
+            if (_chrome.ContainsKey(id)) continue;
+            AddChrome(id, createPane(id));
+            _mru.Insert(0, id);   // new panes are least recently used until activated
+        }
+        if (_zoomedId is { } z && !ids.Contains(z)) _zoomedId = null;
+
+        RebuildBars();
+        if (!_chrome.ContainsKey(_activeId) && _mru.Count > 0) Activate(_mru[^1], focus: hadFocus);
+        else UpdateChrome();
+        InvalidateMeasure();
+        return removed;
+    }
+
+    /// <summary>Makes pane <paramref name="id"/> the active one (e.g. tmux's active pane changed).</summary>
+    public void ActivatePane(int id, bool focus) => Activate(id, focus);
+
+    /// <summary>
+    /// External layout: shows only pane <paramref name="id"/>, at the full window size,
+    /// or every pane again (null). The other panes stay in the tree, just hidden.
+    /// </summary>
+    public void SetZoomedPane(int? id)
+    {
+        if (!IsExternalLayout || _zoomedId == id) return;
+        if (id is { } z && !_chrome.ContainsKey(z)) id = null;
+        SetZoom(id);
+    }
 
     /// <summary>Splits the active pane and puts <paramref name="pane"/> in the new half, active.</summary>
     public bool AddPane(Control pane, SplitAxis axis)
@@ -138,7 +244,7 @@ public sealed class PaneLayoutView : Panel
         _activeId = id;
         _mru.Remove(id);
         _mru.Add(id);
-        if (_zoomedId is not null && _zoomedId != id) SetZoom(id);
+        if (_zoomedId is not null && _zoomedId != id && !IsExternalLayout) SetZoom(id);
         UpdateChrome();
         if (focus) Dispatcher.UIThread.Post(() => ActivePane.Focus(), DispatcherPriority.Input);
         if (changed) ActivePaneChanged?.Invoke(this, EventArgs.Empty);
@@ -155,13 +261,23 @@ public sealed class PaneLayoutView : Panel
 
     public bool ResizeActive(PaneDirection direction, int cells)
     {
-        if (_zoomedId is not null || !_layout.ResizePane(_activeId, direction, cells)) return false;
+        if (_zoomedId is not null) return false;
+        if (IsExternalLayout)
+        {
+            ResizeRequested?.Invoke(_activeId, direction, cells);
+            return ResizeRequested is not null;
+        }
+        if (!_layout.ResizePane(_activeId, direction, cells)) return false;
         InvalidateMeasure();
         return true;
     }
 
     /// <summary>Shows only the active pane, full size (tmux <c>resize-pane -Z</c>), or back.</summary>
-    public void ToggleZoom() => SetZoom(_zoomedId is null && PaneCount > 1 ? _activeId : null);
+    public void ToggleZoom()
+    {
+        if (IsExternalLayout) { if (PaneCount > 1) ZoomRequested?.Invoke(_activeId); }
+        else SetZoom(_zoomedId is null && PaneCount > 1 ? _activeId : null);
+    }
 
     private void SetZoom(int? id)
     {
@@ -279,8 +395,8 @@ public sealed class PaneLayoutView : Panel
         {
             Background = Brushes.Transparent, // hit-testable across the full bar thickness
             Child = line,
-            Cursor = new Cursor(vertical ? StandardCursorType.SizeWestEast : StandardCursorType.SizeNorthSouth),
             IsVisible = _zoomedId is null,
+            Cursor = new Cursor(vertical ? StandardCursorType.SizeWestEast : StandardCursorType.SizeNorthSouth),
         };
 
         Point start = default;
@@ -296,10 +412,17 @@ public sealed class PaneLayoutView : Panel
             double delta = vertical ? p.X - start.X : p.Y - start.Y;
             int target = startSize + (int)Math.Round(delta / cellPx);
             int current = split.Children[index].SizeAlong(split.Axis);
-            if (target == current) return;
+            if (target == current || (IsExternalLayout && target == appliedSize)) return;
             // Throttle live updates: every applied step resizes two or more PTYs.
             if (!final && DateTime.UtcNow - lastApply < DragApplyInterval) return;
             lastApply = DateTime.UtcNow;
+            if (IsExternalLayout)
+            {
+                // tmux decides; its %layout-change moves the bar.
+                DividerMoveRequested?.Invoke(split, index, Math.Max(1, target));
+                appliedSize = target;
+                return;
+            }
             _layout.MoveDivider(split, index, target - current);
             appliedSize = split.Children[index].SizeAlong(split.Axis);
             InvalidateMeasure();
@@ -312,7 +435,8 @@ public sealed class PaneLayoutView : Panel
             if (!e.GetCurrentPoint(bar).Properties.IsLeftButtonPressed) return;
             if (e.ClickCount == 2)
             {
-                _layout.Equalize(split);
+                if (IsExternalLayout) EqualizeRequested?.Invoke(split);
+                else _layout.Equalize(split);
                 InvalidateMeasure();
                 e.Handled = true;
                 return;
@@ -353,7 +477,8 @@ public sealed class PaneLayoutView : Panel
             double.IsInfinity(availableSize.Width) ? 800 : availableSize.Width,
             double.IsInfinity(availableSize.Height) ? 480 : availableSize.Height);
         var cell = CellSize();
-        _layout.Resize((int)Math.Floor(size.Width / cell.Width), (int)Math.Floor(size.Height / cell.Height));
+        if (!IsExternalLayout)
+            _layout.Resize((int)Math.Floor(size.Width / cell.Width), (int)Math.Floor(size.Height / cell.Height));
         foreach (var (child, rect) in Rects(size))
             child.Measure(rect.Size);
         return size;
@@ -362,7 +487,8 @@ public sealed class PaneLayoutView : Panel
     protected override Size ArrangeOverride(Size finalSize)
     {
         var cell = CellSize();
-        _layout.Resize((int)Math.Floor(finalSize.Width / cell.Width), (int)Math.Floor(finalSize.Height / cell.Height));
+        if (!IsExternalLayout)
+            _layout.Resize((int)Math.Floor(finalSize.Width / cell.Width), (int)Math.Floor(finalSize.Height / cell.Height));
         foreach (var (child, rect) in Rects(finalSize))
             child.Arrange(rect);
         return finalSize;
@@ -374,7 +500,20 @@ public sealed class PaneLayoutView : Panel
         var result = new List<(Control, Rect)>();
         if (_zoomedId is { } z)
         {
-            result.Add((_chrome[z], new Rect(size)));
+            var c = CellSize();
+            result.Add((_chrome[z], IsExternalLayout
+                ? new Rect(0, 0, (_layout.Width + 0.5) * c.Width, (_layout.Height + 0.5) * c.Height)
+                : new Rect(size)));
+            return result;
+        }
+        if (IsExternalLayout)
+        {
+            // tmux sizes panes in whole cells, and a pane's terminal must come out at exactly
+            // that many columns and rows. So: one cell per cell, anchored top-left, plus half
+            // a cell of slack at the far edges so pixel rounding can't cost a column.
+            var cell = CellSize();
+            var area = new Rect(0, 0, (_layout.Width + 0.5) * cell.Width, (_layout.Height + 0.5) * cell.Height);
+            Place(_layout.Root, area, cell.Width, cell.Height, result);
             return result;
         }
         // Cell → pixel scale that stretches the grid over the whole view.
