@@ -73,6 +73,12 @@ public sealed class AppSettings
     public bool HideImportedSshConfig { get; set; } = false;
 
     /// <summary>
+    /// When <c>true</c>, the SFTP browser's Modified column shows 12-hour time with
+    /// AM/PM instead of 24-hour time.
+    /// </summary>
+    public bool SftpUse12HourTime { get; set; } = false;
+
+    /// <summary>
     /// One-shot migration: converts old <see cref="FileAssociations"/> entries into
     /// <see cref="Applications"/> entries and clears the source list.
     /// </summary>

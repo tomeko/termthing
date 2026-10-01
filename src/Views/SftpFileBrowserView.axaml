@@ -97,14 +97,16 @@
                     <MenuItem x:Name="MenuDownloadTo" Header="Download to "/>
                     <MenuItem x:Name="MenuRename"         Header="Rename…"         Click="OnMenuRenameClicked"/>
                     <MenuItem x:Name="MenuDelete"         Header="Delete"          Click="OnMenuDeleteClicked"/>
-                    <Separator/>
+                    <Separator x:Name="ItemSeparator"/>
                     <MenuItem x:Name="MenuProperties" Header="Properties"    Click="OnMenuPropertiesClicked"/>
                     <MenuItem x:Name="MenuBookmarkFolder" Header="Bookmark this folder" Click="OnMenuBookmarkFolderClicked"/>
-                    <Separator/>
-                    <MenuItem Header="Refresh" Click="OnRefreshClicked"/>
-                    <Separator x:Name="BlankAreaSeparator"/>
                     <MenuItem x:Name="MenuNewDirectory" Header="New Directory…" Click="OnMenuNewDirectoryClicked"/>
                     <MenuItem x:Name="MenuNewFile"      Header="New File…"      Click="OnMenuNewFileClicked"/>
+                    <Separator x:Name="UploadSeparator"/>
+                    <MenuItem x:Name="MenuUploadFiles"  Header="Upload File(s)…" Click="OnMenuUploadFilesClicked"/>
+                    <MenuItem x:Name="MenuUploadFolder" Header="Upload Folder…"  Click="OnMenuUploadFolderClicked"/>
+                    <Separator x:Name="BlankAreaSeparator"/>
+                    <MenuItem Header="Refresh" Click="OnRefreshClicked"/>
                 </ContextMenu>
             </DataGrid.ContextMenu>
             <DataGrid.Columns>

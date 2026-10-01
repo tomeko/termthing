@@ -38,27 +38,38 @@ public sealed class TransferQueue : IDisposable
         }
     }
 
+    /// <summary>
+    /// Stops the running transfer and drops everything still queued. Without the drain,
+    /// the rest of a cancelled batch would silently resume on the next, unrelated enqueue.
+    /// </summary>
     public void Cancel()
     {
-        _cts.Cancel();
-        _cts = new CancellationTokenSource();
+        lock (_lock)
+        {
+            _jobs.Clear();
+            _cts.Cancel();
+            _cts = new CancellationTokenSource();
+        }
     }
 
     private async Task RunAsync()
     {
         while (_jobs.TryDequeue(out var job))
         {
-            if (_cts.IsCancellationRequested)
-                break;
+            CancellationToken ct;
+            lock (_lock) ct = _cts.Token;
 
             try
             {
                 if (job.IsUpload)
-                    await UploadAsync(job, _cts.Token);
+                    await UploadAsync(job, ct);
                 else
-                    await DownloadAsync(job, _cts.Token);
+                    await DownloadAsync(job, ct);
             }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException)
+            {
+                TransferError?.Invoke(this, $"{Path.GetFileName(job.LocalPath)}: cancelled");
+            }
             catch (Exception ex)
             {
                 TransferError?.Invoke(this, $"{Path.GetFileName(job.LocalPath)}: {ex.Message}");
@@ -68,23 +79,30 @@ public sealed class TransferQueue : IDisposable
         QueueEmpty?.Invoke(this, EventArgs.Empty);
     }
 
+    // Cancellation and progress ride on a stream wrapper rather than SSH.NET's progress
+    // callback: SSH.NET invokes that callback on a thread-pool thread of its own, so an
+    // exception thrown there to cancel is unhandled and takes the whole process down.
+    // The wrapper's Read/Write run on the transferring thread, where a throw unwinds
+    // UploadFile/DownloadFile normally.
+
     private Task UploadAsync(TransferJob job, CancellationToken ct)
     {
         return Task.Run(() =>
         {
-            using var fs = File.OpenRead(job.LocalPath);
-            _sftp.UploadFile(fs, job.RemotePath, canOverride: true,
-                transferred =>
-                {
-                    ct.ThrowIfCancellationRequested();
-                    ProgressChanged?.Invoke(this, new TransferProgressEventArgs
-                    {
-                        FileName         = Path.GetFileName(job.LocalPath),
-                        TransferredBytes = (long)transferred,
-                        TotalBytes       = job.TotalBytes,
-                        IsUpload         = true,
-                    });
-                });
+            try
+            {
+                using var fs = File.OpenRead(job.LocalPath);
+                using var progress = new ProgressStream(fs, ct, transferred => ReportProgress(job, transferred));
+                _sftp.UploadFile(progress, job.RemotePath, canOverride: true);
+            }
+            catch (OperationCanceledException)
+            {
+                // Don't leave a truncated file on the server that looks like a finished upload.
+                // (Overwriting an existing file truncated it as soon as the upload began, so
+                // there is nothing intact left to keep either way.)
+                try { _sftp.DeleteFile(job.RemotePath); } catch { }
+                throw;
+            }
         }, ct);
     }
 
@@ -93,21 +111,78 @@ public sealed class TransferQueue : IDisposable
         return Task.Run(() =>
         {
             Directory.CreateDirectory(Path.GetDirectoryName(job.LocalPath)!);
-            using var fs = File.Create(job.LocalPath);
-            _sftp.DownloadFile(job.RemotePath, fs,
-                transferred =>
-                {
-                    ct.ThrowIfCancellationRequested();
-                    ProgressChanged?.Invoke(this, new TransferProgressEventArgs
-                    {
-                        FileName         = Path.GetFileName(job.LocalPath),
-                        TransferredBytes = (long)transferred,
-                        TotalBytes       = job.TotalBytes,
-                        IsUpload         = false,
-                    });
-                });
+            try
+            {
+                using var fs = File.Create(job.LocalPath);
+                using var progress = new ProgressStream(fs, ct, transferred => ReportProgress(job, transferred));
+                _sftp.DownloadFile(job.RemotePath, progress);
+            }
+            catch (OperationCanceledException)
+            {
+                // Don't leave a truncated file behind that looks like a finished download.
+                try { File.Delete(job.LocalPath); } catch { }
+                throw;
+            }
         }, ct);
     }
 
-    public void Dispose() => _cts.Dispose();
+    private void ReportProgress(TransferJob job, long transferred) =>
+        ProgressChanged?.Invoke(this, new TransferProgressEventArgs
+        {
+            FileName         = Path.GetFileName(job.LocalPath),
+            TransferredBytes = transferred,
+            TotalBytes       = job.TotalBytes,
+            IsUpload         = job.IsUpload,
+        });
+
+    public void Dispose()
+    {
+        Cancel();
+        _cts.Dispose();
+    }
+
+    /// <summary>
+    /// Pass-through stream that counts bytes and throws <see cref="OperationCanceledException"/>
+    /// from Read/Write once <paramref name="ct"/> is cancelled.
+    /// </summary>
+    private sealed class ProgressStream(Stream inner, CancellationToken ct, Action<long> onProgress) : Stream
+    {
+        private long _transferred;
+
+        public override bool CanRead  => inner.CanRead;
+        public override bool CanSeek  => inner.CanSeek;
+        public override bool CanWrite => inner.CanWrite;
+        public override long Length   => inner.Length;
+        public override long Position
+        {
+            get => inner.Position;
+            set => inner.Position = value;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            ct.ThrowIfCancellationRequested();
+            int n = inner.Read(buffer, offset, count);
+            Advance(n);
+            return n;
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            ct.ThrowIfCancellationRequested();
+            inner.Write(buffer, offset, count);
+            Advance(count);
+        }
+
+        private void Advance(int n)
+        {
+            if (n <= 0) return;
+            _transferred += n;
+            onProgress(_transferred);
+        }
+
+        public override void Flush() => inner.Flush();
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+        public override void SetLength(long value) => inner.SetLength(value);
+    }
 }

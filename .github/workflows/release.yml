@@ -32,10 +32,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # CRITICAL: the terminal control lives in a git submodule.
-          # Omitting this causes a "csproj not found" build error.
-          submodules: recursive
 
       - uses: actions/setup-dotnet@v4
         with:

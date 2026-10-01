@@ -39,7 +39,7 @@ public sealed class LocalSessionLauncher : ISessionLauncher
         var tc = new TerminalControl
         {
             Process = process,
-            Args = settings.Args,
+            ProcessArgs = settings.Args,
             Background = Brushes.Black,
             Foreground = Brushes.LightGray,
             FontFamily = FontFamily.Parse("fonts:CascadiaCode#Cascadia Code"),

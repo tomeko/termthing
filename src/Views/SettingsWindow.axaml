@@ -57,6 +57,13 @@
                     <CheckBox x:Name="SkipNewlinePasteConfirmCheckBox"
                               Content="Skip newline-paste warning (the extra warning shown when pasted text contains a newline that would execute)"/>
 
+                    <TextBlock Text="SFTP browser"
+                               FontWeight="SemiBold"
+                               Margin="0,8,0,2"/>
+
+                    <CheckBox x:Name="SftpUse12HourTimeCheckBox"
+                              Content="Show 12-hour time (AM/PM) in the Modified column"/>
+
                     <TextBlock Text="OpenSSH config import"
                                FontWeight="SemiBold"
                                Margin="0,8,0,2"/>

@@ -409,7 +409,14 @@ public sealed class SshSessionLauncher : ISessionLauncher
         // which is the whole point of the "Defer initialization" option.
         instance.MarkReadyForShellIntegration();
 
-        await tc.AttachConnection(connection);
+        tc.AttachConnection(connection);
+
+        // Claim focus once the input system has settled, as LaunchProcess does for local shells.
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!tc.IsFocused)
+                tc.Focus();
+        }, DispatcherPriority.Input);
     }
 
     /// <summary>
@@ -496,6 +503,7 @@ internal sealed class SshSessionInstance : ISessionInstance
     private readonly List<LogTailWindow> _tailWindows = new();
     private bool _connectionEnded;
     private int _sessionEndedFired; // Interlocked guard — ensures SessionEnded fires at most once
+    private SshPtyConnection? _connection; // owned by us: an attached connection is never disposed by the terminal
 
     public SshSessionInstance(
         TerminalControl  tc,
@@ -647,7 +655,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         if (_shellIntegrationInjected || !_readyForShellIntegration) return;
         if (_definition?.Settings is SshSettings ss && !ss.ShellIntegrationOsc7) return;
         _shellIntegrationInjected = true;
-        Dispatcher.UIThread.Post(() => _tc.ShellIntegrationCommand = Osc7ShellIntegrationCommand);
+        _connection?.ArmShellIntegration(Osc7ShellIntegrationCommand);
     }
 
     /// <summary>
@@ -735,6 +743,8 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     internal void OnPtyConnectionReady(SshPtyConnection connection)
     {
+        _connection = connection;
+
         // Both ConnectionClosed (SSH.NET detected the drop) and ProcessExited
         // (TerminalView EOF fallback) route here so the overlay always appears.
         void FireSessionEnded()
@@ -937,6 +947,9 @@ internal sealed class SshSessionInstance : ISessionInstance
 
         // 4. Kill the TerminalControl last.
         try { _tc.Kill(); } catch { }
+
+        // 5. The terminal only detaches an attached connection, so release it ourselves.
+        try { _connection?.Dispose(); } catch { }
     }
 
     public void Dispose() => Kill();
