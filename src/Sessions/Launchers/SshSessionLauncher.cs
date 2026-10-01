@@ -500,7 +500,7 @@ internal sealed class SshSessionInstance : ISessionInstance
     private DockerMonPoller? _dockerMonPoller;
     private DockerMonPanel? _dockerMonPanel;
 
-    private readonly List<LogTailWindow> _tailWindows = new();
+    private readonly Dictionary<string, LogTailWindow> _tailWindows = new(); // keyed by source ("file:<path>", "docker:<id>")
     private bool _connectionEnded;
     private int _sessionEndedFired; // Interlocked guard — ensures SessionEnded fires at most once
     private SshPtyConnection? _connection; // owned by us: an attached connection is never disposed by the terminal
@@ -757,7 +757,7 @@ internal sealed class SshSessionInstance : ISessionInstance
             // Close any open tail windows — their underlying exec channels are dead.
             Dispatcher.UIThread.Post(() =>
             {
-                foreach (var w in _tailWindows.ToArray())
+                foreach (var w in _tailWindows.Values.ToArray())
                 {
                     try { w.Close(); } catch { }
                 }
@@ -872,13 +872,8 @@ internal sealed class SshSessionInstance : ISessionInstance
     private void OpenTailWindow(string remotePath)
     {
         if (_connectionEnded || !_client.IsConnected) return;
-        var source = new SshTailLogSource(_client, remotePath);
-        var window = new LogTailWindow(source, remotePath);
-        _tailWindows.Add(window);
-        window.Closed += (_, _) => _tailWindows.Remove(window);
-        var owner = TopLevel.GetTopLevel(_hostPanel) as Window;
-        if (owner != null) window.Show(owner);
-        else window.Show();
+        ShowTailWindow("file:" + remotePath,
+            () => new LogTailWindow(new SshTailLogSource(_client, remotePath), remotePath));
     }
 
     private void OpenDockerLogsWindow(string containerId, string name)
@@ -886,10 +881,27 @@ internal sealed class SshSessionInstance : ISessionInstance
         if (_connectionEnded || !_client.IsConnected) return;
         var shortId = containerId.Length > 12 ? containerId[..12] : containerId;
         var label = $"docker:{name} ({shortId})";
-        var source = new DockerLogsSource(_client, containerId, label);
-        var window = new LogTailWindow(source);
-        _tailWindows.Add(window);
-        window.Closed += (_, _) => _tailWindows.Remove(window);
+        ShowTailWindow("docker:" + containerId,
+            () => new LogTailWindow(new DockerLogsSource(_client, containerId, label)));
+    }
+
+    /// <summary>
+    /// One window per source: brings an existing window for <paramref name="key"/>
+    /// to the front, otherwise creates and shows a new one.
+    /// </summary>
+    private void ShowTailWindow(string key, Func<LogTailWindow> create)
+    {
+        if (_tailWindows.TryGetValue(key, out var existing))
+        {
+            if (existing.WindowState == WindowState.Minimized)
+                existing.WindowState = WindowState.Normal;
+            existing.Activate();
+            return;
+        }
+
+        var window = create();
+        _tailWindows[key] = window;
+        window.Closed += (_, _) => _tailWindows.Remove(key);
         var owner = TopLevel.GetTopLevel(_hostPanel) as Window;
         if (owner != null) window.Show(owner);
         else window.Show();
@@ -911,7 +923,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         // don't try to read from a torn-down client.
         try { _sysmonPoller?.Dispose();    } catch { }
         try { _dockerMonPoller?.Dispose(); } catch { }
-        foreach (var w in _tailWindows.ToArray())
+        foreach (var w in _tailWindows.Values.ToArray())
         {
             try { w.Close(); } catch { }
         }

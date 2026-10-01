@@ -7,6 +7,8 @@
         MinWidth="480" MinHeight="320"
         WindowStartupLocation="CenterScreen">
 
+    <!-- Frame turns red while the followed container is stopped. -->
+    <Border Name="FrameBorder" BorderThickness="0" BorderBrush="#D13438">
     <DockPanel>
 
         <!-- Top toolbar -->
@@ -47,6 +49,18 @@
             </DockPanel>
         </Border>
 
+        <!-- Shown while the followed container is stopped/removed. -->
+        <Border Name="StoppedBanner"
+                DockPanel.Dock="Top"
+                IsVisible="False"
+                Background="#D13438"
+                Padding="8,4">
+            <TextBlock Name="StoppedText"
+                       Foreground="White"
+                       FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis"/>
+        </Border>
+
         <TextBlock Name="StatusText"
                    DockPanel.Dock="Bottom"
                    FontSize="11"
@@ -65,4 +79,5 @@
                                VerticalScrollBarVisibility="Auto"/>
 
     </DockPanel>
+    </Border>
 </Window>
