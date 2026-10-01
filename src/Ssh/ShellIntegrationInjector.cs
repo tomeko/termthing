@@ -13,6 +13,12 @@ namespace TermThing.Ssh;
 /// dropped. Matching on bytes is safe because the sentinel and <c>\n</c> are ASCII,
 /// which never occur inside a multi-byte UTF-8 sequence.
 /// </para>
+/// <para>
+/// It also types plain lines for the user once the shell is idle
+/// (<see cref="SendWhenIdle"/>), e.g. reattaching tmux after a reconnect. Those go out
+/// in the same write as the integration command, after it, so the integration command
+/// always reaches the login shell rather than whatever the queued line starts.
+/// </para>
 /// </summary>
 internal sealed class ShellIntegrationInjector
 {
@@ -35,7 +41,11 @@ internal sealed class ShellIntegrationInjector
     private readonly object _lock = new();
 
     private string? _command;
-    private bool _scheduled;
+    private bool _commandSent;
+    private readonly List<string> _queued = new();
+    private bool _pumpRunning;
+    private bool _sawOutput;
+    private CancellationToken _ct;
     private long _lastOutputTicks;
 
     // Echo hold. A line editor (zsh's ZLE especially) redraws the line it echoes in
@@ -67,6 +77,22 @@ internal sealed class ShellIntegrationInjector
     }
 
     /// <summary>
+    /// Types <paramref name="line"/> (after Ctrl+U, which clears any partial input) once
+    /// the shell has produced output and gone quiet, after the integration command if
+    /// one is still pending. Unlike the integration command, its echo is not hidden.
+    /// </summary>
+    public void SendWhenIdle(string line)
+    {
+        lock (_lock)
+        {
+            _queued.Add(line);
+            if (_sawOutput) StartPump();
+        }
+    }
+
+    private bool HasWork => (_command is not null && !_commandSent) || _queued.Count > 0;
+
+    /// <summary>
     /// Passes one chunk of shell output through. Returns <c>null</c> when the chunk is
     /// to be delivered unchanged, otherwise the bytes to deliver now (possibly empty).
     /// </summary>
@@ -74,23 +100,20 @@ internal sealed class ShellIntegrationInjector
     {
         Volatile.Write(ref _lastOutputTicks, DateTime.UtcNow.Ticks);
 
-        bool schedule = false;
         lock (_lock)
         {
-            if (_command is not null && !_scheduled)
-                _scheduled = schedule = true;
+            _sawOutput = true;
+            _ct = ct;
+            StartPump();
 
             if (!_filtering)
             {
                 // Late echoes (a shell that re-prints its line after the hold expired)
                 // still get the cheap per-chunk treatment.
-                if (schedule) ScheduleInjection(ct);
                 return chunk.IndexOf(SentinelBytes) < 0 ? null : StripSentinelLines(chunk);
             }
 
-            var result = FilterHeld(chunk);
-            if (schedule) ScheduleInjection(ct);
-            return result;
+            return FilterHeld(chunk);
         }
     }
 
@@ -135,8 +158,12 @@ internal sealed class ShellIntegrationInjector
         return complete.ToArray();
     }
 
-    private void ScheduleInjection(CancellationToken ct)
+    /// <summary>Starts the idle-wait-then-write task if there is work and none is running. Caller holds the lock.</summary>
+    private void StartPump()
     {
+        if (_pumpRunning || !HasWork) return;
+        _pumpRunning = true;
+        var ct = _ct;
         _ = Task.Run(async () =>
         {
             try
@@ -151,16 +178,25 @@ internal sealed class ShellIntegrationInjector
                     await Task.Delay(QuietPeriod - idle, ct).ConfigureAwait(false);
                 }
 
-                string command;
+                var text = new StringBuilder();
+                bool hiding = false;
                 lock (_lock)
                 {
-                    command = _command!;
-                    _filtering = true;
-                    _hold.Clear();
+                    if (_command is not null && !_commandSent)
+                    {
+                        _commandSent = true;
+                        hiding = _filtering = true;
+                        _hold.Clear();
+                        text.Append(_command).Append('\n');
+                    }
+                    foreach (var line in _queued)
+                        text.Append('\x15').Append(line).Append('\n');
+                    _queued.Clear();
                 }
-                _ = Task.Delay(HoldTimeout, CancellationToken.None).ContinueWith(_ => EndHold(), TaskScheduler.Default);
+                if (hiding)
+                    _ = Task.Delay(HoldTimeout, CancellationToken.None).ContinueWith(_ => EndHold(), TaskScheduler.Default);
 
-                var bytes = Encoding.UTF8.GetBytes(command + "\n");
+                var bytes = Encoding.UTF8.GetBytes(text.ToString());
                 await _writer.WriteAsync(bytes, ct).ConfigureAwait(false);
                 await _writer.FlushAsync(ct).ConfigureAwait(false);
             }
@@ -169,6 +205,16 @@ internal sealed class ShellIntegrationInjector
                 // Cancelled or the write failed, so no echo is coming — release now
                 // rather than making the user wait out the hold timeout.
                 EndHold();
+            }
+            finally
+            {
+                // Work queued while we were writing is picked up on the next output
+                // chunk, or right away if the shell has already spoken.
+                lock (_lock)
+                {
+                    _pumpRunning = false;
+                    if (_queued.Count > 0) StartPump();
+                }
             }
         }, CancellationToken.None);
     }

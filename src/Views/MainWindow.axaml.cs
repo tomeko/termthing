@@ -18,6 +18,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using TermThing.Configuration;
 using TermThing.Editor;
+using TermThing.Panes;
 using TermThing.Sessions;
 using TermThing.Sessions.Launchers;
 using TermThing.Ssh;
@@ -57,6 +58,8 @@ public partial class MainWindow : Window, ISessionPromptHost
         /// Null for sessions without an SFTP browser.
         /// </summary>
         public Guid? SftpEditorSessionId { get; set; }
+        /// <summary>tmux session the tab's shell was in when it disconnected; reattached on reconnect.</summary>
+        public string? TmuxSession { get; set; }
     }
 
     // Tab drag-and-drop state
@@ -673,6 +676,7 @@ public partial class MainWindow : Window, ISessionPromptHost
                 EnableSftp = dialog.EnableSftp,
                 DeferInitialization = dialog.DeferInitialization,
                 ProxyCommand = dialog.ProxyCommand,
+                TmuxAutoAttach = dialog.TmuxAutoAttach,
                 TransientSecretsConfirmed = true,
                 JumpHosts = [.. dialog.JumpHosts],
             };
@@ -831,6 +835,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             EnableSftp   = dialog.EnableSftp,
             DeferInitialization = dialog.DeferInitialization,
             ProxyCommand = dialog.ProxyCommand,
+            TmuxAutoAttach = dialog.TmuxAutoAttach,
             JumpHosts    = [.. dialog.JumpHosts],
         };
 
@@ -865,6 +870,7 @@ public partial class MainWindow : Window, ISessionPromptHost
                 EnableSftp   = dialog.EnableSftp,
                 DeferInitialization = dialog.DeferInitialization,
                 ProxyCommand = dialog.ProxyCommand,
+                TmuxAutoAttach = dialog.TmuxAutoAttach,
                 JumpHosts    = [.. dialog.JumpHosts],
             };
 
@@ -1009,6 +1015,18 @@ public partial class MainWindow : Window, ISessionPromptHost
             Margin = new Thickness(0, 0, 6, 0),
         };
 
+        // Tab menu affordances: the right-click menu is not discoverable on its own.
+        var menuButton = new Button
+        {
+            Content = "▾",
+            Padding = new Thickness(2, 0, 2, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Margin = new Thickness(0, 0, 2, 0),
+        };
+        ToolTip.SetTip(menuButton, "Tab menu (split, tmux, …)");
+
         var popOutButton = new Button
         {
             Content = "⤢",
@@ -1032,7 +1050,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         var headerContent = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Children = { tabIcon, titleBlock, popOutButton, closeButton },
+            Children = { tabIcon, titleBlock, menuButton, popOutButton, closeButton },
         };
 
         // Wrap in a Border so we can paint left/right drop indicators via BorderThickness
@@ -1067,27 +1085,16 @@ public partial class MainWindow : Window, ISessionPromptHost
         _tabStates[tab] = state;
 
         WireSessionInstance(state, instance);
+        StartTmux(state, instance);
         popOutButton.Click += (_, _) => PopOutTab(tab);
         closeButton.Click  += async (_, _) => await CloseTabAsync(tab);
 
-        // --- Context menu ---
-        var closeItem  = new MenuItem { Header = "Close" };
-        var othersItem = new MenuItem { Header = "Close Others" };
-        var rightItem  = new MenuItem { Header = "Close to the Right" };
-        closeItem.Click  += async (_, _) => await CloseTabAsync(tab);
-        othersItem.Click += async (_, _) => await CloseOtherTabsAsync(tab);
-        rightItem.Click  += async (_, _) => await CloseTabsToRightAsync(tab);
+        // --- Tab menu: right-click the header, click the icon, or the ▾ button ---
         var ctxMenu = new ContextMenu();
-        ctxMenu.Opening += (_, _) =>
-        {
-            var idx = TerminalTabs.Items.IndexOf(tab);
-            othersItem.IsEnabled = TerminalTabs.Items.Count > 1;
-            rightItem.IsEnabled  = idx >= 0 && idx < TerminalTabs.Items.Count - 1;
-        };
-        ctxMenu.Items.Add(closeItem);
-        ctxMenu.Items.Add(othersItem);
-        ctxMenu.Items.Add(rightItem);
+        ctxMenu.Opening += (_, _) => PopulateTabMenu(ctxMenu, state);
         headerBorder.ContextMenu = ctxMenu;
+        menuButton.Click += (_, _) => OpenTabMenu(state, menuButton, PlacementMode.BottomEdgeAlignedLeft);
+        tabIcon.Tapped   += (_, e) => { e.Handled = true; OpenTabMenu(state, tabIcon, PlacementMode.BottomEdgeAlignedLeft); };
 
         // --- Tab drag-and-drop ---
         headerBorder.PointerPressed += (_, e) =>
@@ -1155,8 +1162,8 @@ public partial class MainWindow : Window, ISessionPromptHost
             // Suppress the PTY-kill that normally fires when a TerminalControl
             // is detached from the visual tree — the tab is only moving positions.
             _tabStates.TryGetValue(dragged, out var draggedState);
-            var tc = draggedState?.Instance?.Terminal;
-            tc?.BeginReparent();
+            var terminals = draggedState?.Instance?.Terminals ?? [];
+            foreach (var t in terminals) t.BeginReparent();
 
             items.Remove(dragged);
             var toIdx = items.IndexOf(tab);
@@ -1167,8 +1174,8 @@ public partial class MainWindow : Window, ISessionPromptHost
             TerminalTabs.SelectedItem = dragged;
 
             // Re-enable the cleanup hook once the control is settled in its new slot.
-            if (tc != null)
-                Dispatcher.UIThread.Post(() => tc.EndReparent(), DispatcherPriority.Loaded);
+            if (terminals.Count > 0)
+                Dispatcher.UIThread.Post(() => { foreach (var t in terminals) t.EndReparent(); }, DispatcherPriority.Loaded);
         });
 
         TerminalTabs.Items.Add(tab);
@@ -1190,6 +1197,8 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         instance.SessionEnded += (_, _) =>
         {
+            // Remember the tmux session before the instance goes, so Reconnect can reattach it.
+            state.TmuxSession = (instance as SshSessionInstance)?.TmuxSession;
             state.Instance = null;
             instance.Dispose();
             // Session died naturally (SSH disconnect) — editors can no longer upload.
@@ -1199,13 +1208,16 @@ public partial class MainWindow : Window, ISessionPromptHost
         };
 
         // SFTP opened/closed after connect (post-connect toggle) — refresh the left
-        // pane if this session's tab is the one currently selected.
+        // pane if this session's tab is the one currently selected, or the floating
+        // window's SFTP column if the tab is floating.
         instance.SftpPanelChanged += (_, _) => Dispatcher.UIThread.Post(() =>
         {
             // Keep the editor-session id in sync so tab-close cleanup still works.
             state.SftpEditorSessionId = (instance.SftpPanel as SftpFileBrowserView)?.SessionEditorId
                                         ?? state.SftpEditorSessionId;
-            if (TerminalTabs?.SelectedItem == state.Tab)
+            if (state.FloatingWindow is { } win)
+                win.SetSftpPanel(instance.SftpPanel);
+            else if (TerminalTabs?.SelectedItem == state.Tab)
                 AttachSftpPanel(state, switchToSftpTab: instance.IsSftpActive);
         });
     }
@@ -1214,13 +1226,229 @@ public partial class MainWindow : Window, ISessionPromptHost
     {
         if (!_tabStates.ContainsKey(state.Tab)) return;
 
-        var overlay = new SessionEndedOverlay();
+        var overlay = new SessionEndedOverlay(hint: TmuxReattachHint(state));
         state.Overlay = overlay;
+        UpdateSplitButtons();
         state.Host.Children.Add(overlay);
         ClearSftpPanelIfNeeded(state.Tab);
+        state.FloatingWindow?.SetSftpPanel(null);   // the dead session's browser
 
         overlay.CloseRequested     += async (_, _) => await CloseTabAsync(state.Tab);
         overlay.ReconnectRequested += async (_, _) => await ReconnectTabAsync(state);
+    }
+
+    /// <summary>
+    /// Attaches tmux in a freshly connected SSH tab: the session the tab was in when it
+    /// dropped, else the session's configured auto-attach. One attach only — a second
+    /// one would be typed into tmux itself.
+    /// </summary>
+    private static void StartTmux(TabState state, ISessionInstance instance)
+    {
+        if (instance is not SshSessionInstance ssh) return;
+        var session = state.TmuxSession;
+        if (string.IsNullOrEmpty(session) && state.Def.Settings is SshSettings ss)
+            session = ss.TmuxAutoAttach;
+        if (!string.IsNullOrEmpty(session))
+            ssh.AttachTmuxWhenReady(session);
+    }
+
+    /// <summary>Opens the tab menu at <paramref name="anchor"/> (a header icon/button, or the floating window's toolbar).</summary>
+    private void OpenTabMenu(TabState state, Control anchor, PlacementMode placement)
+    {
+        var menu = new ContextMenu { Placement = placement };
+        PopulateTabMenu(menu, state);
+        menu.Open(anchor);
+    }
+
+    /// <summary>
+    /// Fills a tab menu. Rebuilt on every open: the session instance changes on
+    /// reconnect, pane items depend on the pane count, and a floating tab gets
+    /// Dock Back instead of the tab-strip items.
+    /// </summary>
+    private void PopulateTabMenu(ContextMenu menu, TabState state)
+    {
+        menu.Items.Clear();
+        var tab = state.Tab;
+        bool floating = state.FloatingWindow is not null;
+
+        // Split panes (sessions that support them). Items act on the active pane.
+        if (state.Instance?.Panes is { } panes)
+        {
+            var splitRight = new MenuItem
+            {
+                Header = "Split Right",
+                InputGesture = new KeyGesture(Key.OemPlus, KeyModifiers.Alt | KeyModifiers.Shift),
+                IsEnabled = panes.CanSplitActive(SplitAxis.LeftRight),
+            };
+            var splitDown = new MenuItem
+            {
+                Header = "Split Down",
+                InputGesture = new KeyGesture(Key.OemMinus, KeyModifiers.Alt | KeyModifiers.Shift),
+                IsEnabled = panes.CanSplitActive(SplitAxis.TopBottom),
+            };
+            splitRight.Click += (_, _) => panes.RequestSplit(SplitAxis.LeftRight);
+            splitDown.Click  += (_, _) => panes.RequestSplit(SplitAxis.TopBottom);
+            menu.Items.Add(splitRight);
+            menu.Items.Add(splitDown);
+
+            if (panes.PaneCount > 1)
+            {
+                var zoom = new MenuItem
+                {
+                    Header = panes.IsZoomed ? "Unzoom Pane" : "Zoom Pane",
+                    InputGesture = new KeyGesture(Key.Z, KeyModifiers.Alt | KeyModifiers.Shift),
+                };
+                var closePane = new MenuItem
+                {
+                    Header = "Close Pane",
+                    InputGesture = new KeyGesture(Key.W, KeyModifiers.Control | KeyModifiers.Shift),
+                };
+                zoom.Click      += (_, _) => panes.ToggleZoom();
+                closePane.Click += (_, _) => panes.RequestCloseActive();
+                menu.Items.Add(zoom);
+                menu.Items.Add(closePane);
+            }
+            menu.Items.Add(new Separator());
+        }
+
+        // tmux submenu (SSH tabs only), filled in from the host as the menu opens.
+        if (state.Instance is SshSessionInstance ssh)
+        {
+            var tmuxItem = new MenuItem { Header = "tmux" };
+            _ = PopulateTmuxMenuAsync(tmuxItem, ssh);
+            menu.Items.Add(tmuxItem);
+            menu.Items.Add(new Separator());
+        }
+
+        // SFTP browser toggle — the only way to open it for a floating tab, whose
+        // window has no "Open SFTP browser" placeholder of its own.
+        if (state.Overlay is null && state.Instance is { CanUseSftp: true } inst)
+        {
+            var sftp = new MenuItem { Header = inst.IsSftpActive ? "Close SFTP Browser" : "Open SFTP Browser" };
+            sftp.Click += async (_, _) =>
+            {
+                bool open = !inst.IsSftpActive;
+                if (!await inst.SetSftpEnabledAsync(open))
+                    Toast.Show(this, open ? "Couldn't open the SFTP browser." : "Couldn't close the SFTP browser.");
+            };
+            menu.Items.Add(sftp);
+            menu.Items.Add(new Separator());
+        }
+
+        if (floating)
+        {
+            var dock = new MenuItem { Header = "Dock Back" };
+            dock.Click += (_, _) => state.FloatingWindow?.RequestDockBack();
+            menu.Items.Add(dock);
+        }
+        else
+        {
+            var popOut = new MenuItem { Header = "Float in Separate Window" };
+            popOut.Click += (_, _) => PopOutTab(tab);
+            menu.Items.Add(popOut);
+        }
+        menu.Items.Add(new Separator());
+
+        var close = new MenuItem { Header = "Close" };
+        close.Click += async (_, _) => await CloseTabAsync(tab);
+        menu.Items.Add(close);
+
+        if (!floating)
+        {
+            var idx = TerminalTabs.Items.IndexOf(tab);
+            var others = new MenuItem { Header = "Close Others", IsEnabled = TerminalTabs.Items.Count > 1 };
+            var right  = new MenuItem { Header = "Close to the Right", IsEnabled = idx >= 0 && idx < TerminalTabs.Items.Count - 1 };
+            others.Click += async (_, _) => await CloseOtherTabsAsync(tab);
+            right.Click  += async (_, _) => await CloseTabsToRightAsync(tab);
+            menu.Items.Add(others);
+            menu.Items.Add(right);
+        }
+    }
+
+    private static string? TmuxReattachHint(TabState state) =>
+        state.TmuxSession is { } name ? $"Reconnect will reattach tmux session '{name}'." : null;
+
+    /// <summary>
+    /// Fills the tab's tmux submenu. The last known state is shown straight away and
+    /// the host is queried in the background; the items are only rebuilt if the answer
+    /// differs, since replacing them while the submenu is open makes it flash.
+    /// </summary>
+    private async Task PopulateTmuxMenuAsync(MenuItem root, SshSessionInstance ssh)
+    {
+        if (ssh.LastTmuxMenuState is { } cached)
+            BuildTmuxMenu(root, ssh, cached);
+        else if (root.Tag is null)
+            root.Items.Add(new MenuItem { Header = "Loading…", IsEnabled = false });
+
+        BuildTmuxMenu(root, ssh, await ssh.GetTmuxMenuStateAsync());
+    }
+
+    /// <summary>
+    /// Builds the submenu: the host's sessions (click to show one in this tab),
+    /// New session…, and Detach when the tab is inside tmux. No-op when the menu
+    /// already shows <paramref name="menu"/>.
+    /// </summary>
+    private void BuildTmuxMenu(MenuItem root, SshSessionInstance ssh, SshSessionInstance.TmuxMenuState menu)
+    {
+        if (Equals(root.Tag, menu.Signature)) return;
+        root.Tag = menu.Signature;
+        root.Items.Clear();
+
+        if (menu.Version is null)
+        {
+            root.Items.Add(new MenuItem { Header = "tmux not found on this host", IsEnabled = false });
+            return;
+        }
+
+        foreach (var session in menu.Sessions)
+        {
+            bool current = menu.Own?.SessionName == session.Name;
+            var windows  = session.Windows == 1 ? "1 window" : $"{session.Windows} windows";
+            var detail   = current ? "this tab"
+                         : session.AttachedClients > 0 ? $"{windows}, attached elsewhere"
+                         : windows;
+            var item = new MenuItem
+            {
+                Header    = $"{(current ? "● " : "")}{session.Name}  ({detail})",
+                IsEnabled = !current,
+            };
+            var name = session.Name;
+            item.Click += async (_, _) => await RunTmuxActionAsync(ssh, () => ssh.AttachTmuxAsync(name));
+            root.Items.Add(item);
+        }
+        if (menu.Sessions.Count == 0)
+            root.Items.Add(new MenuItem { Header = "No sessions", IsEnabled = false });
+
+        root.Items.Add(new Separator());
+
+        var newItem = new MenuItem { Header = "New Session…" };
+        newItem.Click += async (_, _) =>
+        {
+            var dialog = new RenameDialog("") { Title = "New tmux Session" };
+            var name = await dialog.ShowDialog<string?>(this);
+            if (name is null) return;
+            await RunTmuxActionAsync(ssh, () => ssh.NewTmuxSessionAsync(name));
+        };
+        root.Items.Add(newItem);
+
+        if (menu.Own is not null)
+        {
+            var detachItem = new MenuItem { Header = $"Detach from '{menu.Own.SessionName}'" };
+            detachItem.Click += async (_, _) => await RunTmuxActionAsync(ssh, ssh.DetachTmuxAsync);
+            root.Items.Add(detachItem);
+        }
+
+        root.Items.Add(new Separator());
+        root.Items.Add(new MenuItem { Header = menu.Version, IsEnabled = false });
+    }
+
+    private async Task RunTmuxActionAsync(SshSessionInstance ssh, Func<Task<string?>> action)
+    {
+        string? error;
+        try { error = await action(); }
+        catch (Exception ex) { error = ex.Message; }
+        if (error is not null) Toast.Show(this, "tmux: " + error);
+        FocusTerminal((Control?)ssh.Terminal ?? ssh.TabContent);
     }
 
     private async Task ReconnectTabAsync(TabState state)
@@ -1274,7 +1502,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         if (newInstance is null)
         {
             // Reconnect failed or was cancelled — show overlay again (with optional reason).
-            var overlay = new SessionEndedOverlay(errorMessage);
+            var overlay = new SessionEndedOverlay(errorMessage, TmuxReattachHint(state));
             state.Overlay = overlay;
             state.Host.Children.Add(overlay);
             overlay.CloseRequested     += async (_, _) => await CloseTabAsync(state.Tab);
@@ -1284,8 +1512,10 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         // Success — swap in the new terminal.
         state.Instance = newInstance;
+        UpdateSplitButtons();
         state.Host.Children.Add(newInstance.TabContent);
         WireSessionInstance(state, newInstance);
+        StartTmux(state, newInstance);
         FocusTerminal((Control?)newInstance.Terminal ?? newInstance.TabContent);
 
         // Re-attach the new instance's SFTP panel. ShowDisconnectOverlay replaced
@@ -1293,7 +1523,9 @@ public partial class MainWindow : Window, ISessionPromptHost
         // the reconnected view is alive and navigating home, so it just needs to be
         // shown again. Only re-attach when this is the selected tab, and don't force
         // the left pane over to the SFTP tab (respect where the user currently is).
-        if (ReferenceEquals(TerminalTabs?.SelectedItem, state.Tab))
+        if (state.FloatingWindow is { } win)
+            win.SetSftpPanel(newInstance.SftpPanel);
+        else if (ReferenceEquals(TerminalTabs?.SelectedItem, state.Tab))
             AttachSftpPanel(state, switchToSftpTab: false);
     }
 
@@ -1518,9 +1750,9 @@ public partial class MainWindow : Window, ISessionPromptHost
         if (!_tabStates.TryGetValue(tab, out var state)) return;
         if (state.FloatingWindow != null) return; // already floating
 
-        // Tell the terminal control not to kill the PTY on detach.
-        if (state.Instance?.Terminal is { } tcOut)
-            tcOut.BeginReparent();
+        // Tell the terminal controls (one per pane) not to kill their PTYs on detach.
+        var terminals = state.Instance?.Terminals ?? [];
+        foreach (var t in terminals) t.BeginReparent();
 
         // Detach content from the TabItem so the host Panel can be re-parented.
         tab.Content = null;
@@ -1550,7 +1782,9 @@ public partial class MainWindow : Window, ISessionPromptHost
             ResolveIconKind(state.Def),
             ResolveIconBrush(state.Def),
             () => DockBackSession(state),
-            async () => await CloseTabAsync(state.Tab, skipConfirm: true))
+            async () => await CloseTabAsync(state.Tab, skipConfirm: true),
+            (anchor, placement) => OpenTabMenu(state, anchor, placement),
+            () => state.Instance?.Panes)
         {
             Width = Bounds.Width,
             Height = Bounds.Height,
@@ -1559,9 +1793,8 @@ public partial class MainWindow : Window, ISessionPromptHost
         state.FloatingWindow = win;
         win.Show();
 
-        // EndReparent after the control has been re-attached to the new visual tree.
-        if (state.Instance?.Terminal is { } tcEnd)
-            Dispatcher.UIThread.Post(() => tcEnd.EndReparent(), DispatcherPriority.Loaded);
+        // EndReparent after the controls have been re-attached to the new visual tree.
+        Dispatcher.UIThread.Post(() => { foreach (var t in terminals) t.EndReparent(); }, DispatcherPriority.Loaded);
     }
 
     /// <summary>
@@ -1573,9 +1806,9 @@ public partial class MainWindow : Window, ISessionPromptHost
         var win = state.FloatingWindow;
         if (win == null) return;
 
-        // Tell the terminal control not to kill the PTY on detach from the floating window.
-        if (state.Instance?.Terminal is { } tcIn)
-            tcIn.BeginReparent();
+        // Tell the terminal controls not to kill their PTYs on detach from the floating window.
+        var terminals = state.Instance?.Terminals ?? [];
+        foreach (var t in terminals) t.BeginReparent();
 
         // Detach hosted controls from the floating window before re-parenting.
         win.DetachContents();
@@ -1592,8 +1825,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         win.Close();
 
         // EndReparent after re-attachment.
-        if (state.Instance?.Terminal is { } tcDone)
-            Dispatcher.UIThread.Post(() => tcDone.EndReparent(), DispatcherPriority.Loaded);
+        Dispatcher.UIThread.Post(() => { foreach (var t in terminals) t.EndReparent(); }, DispatcherPriority.Loaded);
 
         // OnTabSelectionChanged fires and restores the SFTP panel if applicable.
         // Also focus the terminal.
@@ -1613,8 +1845,40 @@ public partial class MainWindow : Window, ISessionPromptHost
             terminal.Focus();
     }
 
+    // -------------------------------------------------------------------------
+    // Toolbar split buttons — act on the selected tab's active pane
+    // -------------------------------------------------------------------------
+
+    /// <summary>The selected tab's pane container, or null when it can't split (or is disconnected).</summary>
+    private PaneLayoutView? SelectedPanes() =>
+        TerminalTabs?.SelectedItem is TabItem tab && _tabStates.TryGetValue(tab, out var state) && state.Overlay is null
+            ? state.Instance?.Panes
+            : null;
+
+    private void UpdateSplitButtons()
+    {
+        if (SplitRightButton is null || SplitDownButton is null) return;
+        SplitRightButton.IsEnabled = SplitDownButton.IsEnabled = SelectedPanes() is not null;
+    }
+
+    private void OnSplitRightClicked(object? sender, RoutedEventArgs e) => SplitSelected(SplitAxis.LeftRight);
+    private void OnSplitDownClicked(object? sender, RoutedEventArgs e)  => SplitSelected(SplitAxis.TopBottom);
+
+    private void SplitSelected(SplitAxis axis)
+    {
+        if (SelectedPanes() is not { } panes) return;
+        if (panes.CanSplitActive(axis))
+            panes.RequestSplit(axis);   // the new pane takes focus
+        else
+        {
+            Toast.Show(this, "The active pane is too small to split.");
+            FocusTerminal(panes.ActivePane);
+        }
+    }
+
     private void OnTabSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        UpdateSplitButtons();
         if (TerminalTabs is null) return;
         if (TerminalTabs.SelectedItem is not TabItem selected) return;
 

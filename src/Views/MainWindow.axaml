@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:views="clr-namespace:TermThing.Views"
+        xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
         x:Class="TermThing.Views.MainWindow"
         Title="TermThing"
         RequestedThemeVariant="Dark"
@@ -26,7 +27,7 @@
         <!-- Top toolbar -->
         <Grid DockPanel.Dock="Top"
               Background="#1e1e1e"
-              ColumnDefinitions="Auto,Auto,*"
+              ColumnDefinitions="Auto,Auto,*,Auto,Auto"
               Margin="6,4">
 
             <!-- New Session split-button -->
@@ -58,6 +59,29 @@
                         <MenuItem Header="Check for updates…"  Click="OnCheckForUpdatesClicked"/>
                     </MenuFlyout>
                 </Button.Flyout>
+            </Button>
+
+            <!-- Split the selected tab's active pane (disabled when it can't split). -->
+            <Button Grid.Column="3"
+                    x:Name="SplitRightButton"
+                    Click="OnSplitRightClicked"
+                    Padding="5,3"
+                    Margin="0,0,2,0"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    IsEnabled="False"
+                    ToolTip.Tip="Split right (Alt+Shift+=)">
+                <materialIcons:MaterialIcon Kind="ViewSplitVertical" Width="16" Height="16"/>
+            </Button>
+            <Button Grid.Column="4"
+                    x:Name="SplitDownButton"
+                    Click="OnSplitDownClicked"
+                    Padding="5,3"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    IsEnabled="False"
+                    ToolTip.Tip="Split down (Alt+Shift+-)">
+                <materialIcons:MaterialIcon Kind="ViewSplitHorizontal" Width="16" Height="16"/>
             </Button>
         </Grid>
 

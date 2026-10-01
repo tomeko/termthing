@@ -20,53 +20,84 @@
         </Style>
     </Window.Styles>
 
-    <DockPanel>
+    <!-- One grid for toolbar and content, so the toolbar's title sits over the terminal
+         column and follows the SFTP splitter, like the tab strip in the main window.
+         Columns: optional SFTP panel | splitter | terminal. -->
+    <Grid x:Name="ContentGrid" ColumnDefinitions="260,4,*" RowDefinitions="Auto,*">
 
-        <!-- Toolbar: session title + Dock Back button -->
-        <Grid DockPanel.Dock="Top"
+        <!-- Toolbar band across the full width (also right-clickable for the tab menu). -->
+        <Border x:Name="ToolbarBand" Grid.Row="0" Grid.ColumnSpan="3" Background="#1e1e1e"/>
+
+        <!-- Toolbar: icon + title + tab menu on the left; pane splits + Dock Back on the right.
+             Right-click anywhere on it (or click the icon / ▾) for the tab menu. -->
+        <Grid x:Name="Toolbar"
+              Grid.Row="0" Grid.Column="2"
               Background="#1e1e1e"
-              ColumnDefinitions="Auto,*,Auto"
+              ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto"
               Margin="8,4">
             <materialIcons:MaterialIcon x:Name="TitleIcon"
                                         Grid.Column="0"
                                         Width="16" Height="16"
                                         VerticalAlignment="Center"
+                                        Cursor="Hand"
                                         Margin="0,0,6,0"/>
             <TextBlock x:Name="TitleText"
                        Grid.Column="1"
                        VerticalAlignment="Center"
                        Foreground="#cccccc"
                        FontSize="13"/>
-            <Button x:Name="DockBackButton"
+            <Button x:Name="MenuButton"
                     Grid.Column="2"
+                    Content="▾"
+                    Padding="4,0"
+                    Margin="4,0,0,0"
+                    VerticalAlignment="Center"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    ToolTip.Tip="Tab menu (split, tmux, …)"/>
+            <Button x:Name="SplitRightButton"
+                    Grid.Column="4"
+                    Padding="5,3"
+                    Margin="0,0,2,0"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    ToolTip.Tip="Split right (Alt+Shift+=)">
+                <materialIcons:MaterialIcon Kind="ViewSplitVertical" Width="16" Height="16"/>
+            </Button>
+            <Button x:Name="SplitDownButton"
+                    Grid.Column="5"
+                    Padding="5,3"
+                    Margin="0,0,8,0"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    ToolTip.Tip="Split down (Alt+Shift+-)">
+                <materialIcons:MaterialIcon Kind="ViewSplitHorizontal" Width="16" Height="16"/>
+            </Button>
+            <Button x:Name="DockBackButton"
+                    Grid.Column="6"
                     Content="⤵ Dock Back"
                     Padding="8,3"/>
         </Grid>
 
-        <!-- Content area: optional SFTP panel | splitter | terminal -->
-        <Grid x:Name="ContentGrid" ColumnDefinitions="260,4,*">
+        <!-- SFTP panel — hidden by default, shown when session has SFTP -->
+        <Border Grid.Row="1" Grid.Column="0" Classes="pane">
+            <ContentControl x:Name="SftpHost"
+                            IsVisible="False"
+                            Background="#252526"/>
+        </Border>
 
-            <!-- SFTP panel — hidden by default, shown when session has SFTP -->
-            <Border Grid.Column="0" Classes="pane">
-                <ContentControl x:Name="SftpHost"
-                                IsVisible="False"
-                                Background="#252526"/>
-            </Border>
+        <GridSplitter x:Name="SftpSplitter"
+                      Grid.Row="1" Grid.Column="1"
+                      Background="#444"
+                      Width="4"
+                      IsVisible="False"
+                      ResizeDirection="Columns"
+                      DragCompleted="OnSftpSplitterDragCompleted"/>
 
-            <GridSplitter x:Name="SftpSplitter"
-                          Grid.Column="1"
-                          Background="#444"
-                          Width="4"
-                          IsVisible="False"
-                          ResizeDirection="Columns"
-                          DragCompleted="OnSftpSplitterDragCompleted"/>
-
-            <!-- Terminal host -->
-            <Border Grid.Column="2" Classes="pane">
-                <ContentControl x:Name="TerminalHost"/>
-            </Border>
-        </Grid>
-
-    </DockPanel>
+        <!-- Terminal host -->
+        <Border Grid.Row="1" Grid.Column="2" Classes="pane">
+            <ContentControl x:Name="TerminalHost"/>
+        </Border>
+    </Grid>
 
 </Window>

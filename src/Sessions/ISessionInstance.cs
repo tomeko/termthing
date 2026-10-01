@@ -1,6 +1,7 @@
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Iciclecreek.Terminal;
+using TermThing.Panes;
 
 namespace TermThing.Sessions;
 
@@ -13,8 +14,20 @@ public interface ISessionInstance : IDisposable
     /// <summary>The control to place as the tab's Content. May be a wrapper panel hosting <see cref="Terminal"/>.</summary>
     Control TabContent { get; }
 
-    /// <summary>The actual <see cref="TerminalControl"/> inside <see cref="TabContent"/> (null when the session has no terminal).</summary>
+    /// <summary>
+    /// The active <see cref="TerminalControl"/> inside <see cref="TabContent"/> — with split
+    /// panes, the focused one (null when the session has no terminal).
+    /// </summary>
     TerminalControl? Terminal { get; }
+
+    /// <summary>
+    /// Every terminal in the tab — one per split pane. Callers that move the tab
+    /// between windows must bracket all of them with BeginReparent/EndReparent.
+    /// </summary>
+    IReadOnlyList<TerminalControl> Terminals => Terminal is { } t ? [t] : [];
+
+    /// <summary>The tab's split-pane container, or null when the session can't split.</summary>
+    PaneLayoutView? Panes => null;
 
     /// <summary>Optional SFTP browser panel (null when not applicable or not currently open).</summary>
     Control? SftpPanel { get; }

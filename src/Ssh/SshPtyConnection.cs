@@ -55,6 +55,9 @@ public sealed class SshPtyConnection : IPtyConnection
     /// its echo. The command must contain <see cref="ShellIntegrationInjector.Sentinel"/>.
     /// </summary>
     public void ArmShellIntegration(string command) => _readerStream.Injector.Arm(command);
+
+    /// <summary>Types <paramref name="line"/> into the shell once it is idle at a prompt (echo not hidden).</summary>
+    public void SendWhenIdle(string line) => _readerStream.Injector.SendWhenIdle(line);
     public Stream WriterStream => _shell;
     public int Pid => 0;
     public int ExitCode { get; private set; }
@@ -67,8 +70,15 @@ public sealed class SshPtyConnection : IPtyConnection
     public event EventHandler<PtyExitedEventArgs>? ProcessExited;
 #pragma warning restore CS0067
 
+    /// <summary>
+    /// True when the close came from the SSH connection failing rather than this shell
+    /// exiting. Other channels on the connection are gone too.
+    /// </summary>
+    public bool ClosedByError { get; private set; }
+
     private void OnClientError(object? sender, Renci.SshNet.Common.ExceptionEventArgs e)
     {
+        ClosedByError = true;
         _readerStream.SignalClosed();
         try { _shell.Close(); } catch { }
         FireConnectionClosed();
@@ -87,11 +97,19 @@ public sealed class SshPtyConnection : IPtyConnection
             ConnectionClosed?.Invoke(this, EventArgs.Empty);
  }
 
+    /// <summary>
+    /// When false, <see cref="Kill"/> and <see cref="Dispose"/> close only this shell
+    /// channel and leave the client alone. TermThing's SSH sessions set it false on every
+    /// pane: the panes share one client, which the session disconnects itself.
+    /// </summary>
+    public bool OwnsClient { get; init; } = true;
+
     public void Kill()
     {
         _readerStream.SignalClosed();
         try { _shell.Close(); } catch { }
-        try { if (_client.IsConnected) _client.Disconnect(); } catch { }
+        if (OwnsClient)
+            try { if (_client.IsConnected) _client.Disconnect(); } catch { }
     }
 
     public void Resize(int cols, int rows)
@@ -132,7 +150,8 @@ public sealed class SshPtyConnection : IPtyConnection
         _readerStream.SignalClosed();
         try { _readerStream.Dispose(); } catch { }
         try { _shell.Dispose(); } catch { }
-        try { _client.Dispose(); } catch { }
+        if (OwnsClient)
+            try { _client.Dispose(); } catch { }
     }
 
     // -------------------------------------------------------------------------

@@ -108,6 +108,13 @@ public record SshSettings : SessionSettings
     /// </summary>
     public bool DeferInitialization { get; init; }
 
+    /// <summary>
+    /// tmux session to attach on connect (<c>tmux new-session -A -s NAME</c>, so it is
+    /// created if missing). Null/empty = don't. Not applied with <see cref="DeferInitialization"/>,
+    /// whose first prompt may not be a shell.
+    /// </summary>
+    public string? TmuxAutoAttach { get; init; }
+
     public bool ShellIntegrationOsc7 { get; init; } = true;
     public string Term { get; init; } = "xterm-256color";
 

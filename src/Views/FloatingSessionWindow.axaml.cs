@@ -11,6 +11,7 @@ using Iciclecreek.Terminal;
 using Material.Icons;
 using Material.Icons.Avalonia;
 using TermThing.Configuration;
+using TermThing.Panes;
 
 namespace TermThing.Views;
 
@@ -19,6 +20,7 @@ public partial class FloatingSessionWindow : Window
     private readonly Action _dockBackCallback;
     private readonly Func<Task> _closeCallback;
     private readonly TextBlock _titleSource;
+    private readonly Func<PaneLayoutView?> _panes;
 
     // Prevents the Closing handler from triggering a second dock-back
     // after DockBackSession has already called Close() on this window.
@@ -31,13 +33,16 @@ public partial class FloatingSessionWindow : Window
         MaterialIconKind iconKind,
         IBrush iconBrush,
         Action dockBackCallback,
-        Func<Task> closeCallback)
+        Func<Task> closeCallback,
+        Action<Control, PlacementMode> openTabMenu,
+        Func<PaneLayoutView?> panes)
     {
         InitializeComponent();
 
         _dockBackCallback = dockBackCallback;
         _closeCallback = closeCallback;
         _titleSource = titleSource;
+        _panes = panes;
 
         // Set toolbar icon.
         var titleIcon = this.FindControl<MaterialIcon>("TitleIcon")!;
@@ -53,19 +58,26 @@ public partial class FloatingSessionWindow : Window
         TerminalHost.Content = sessionHost;
 
         // If the session has an SFTP browser, show it in the left panel.
-        if (sftpPanel != null)
-        {
-            SftpHost.Content = sftpPanel;
-            SftpHost.IsVisible = true;
-            SftpSplitter.IsVisible = true;
-
-            // Restore the saved SFTP panel width (same setting used by the main window).
-            var savedWidth = SettingsService.Temp.LeftColumnWidthPx;
-            if (savedWidth > 0)
-                ContentGrid.ColumnDefinitions[0].Width = new GridLength(savedWidth, GridUnitType.Pixel);
-        }
+        SetSftpPanel(sftpPanel);
 
         DockBackButton.Click += OnDockBackClicked;
+
+        // Tab menu: the ▾ button, the icon, or a right-click anywhere on the toolbar.
+        MenuButton.Click += (_, _) => openTabMenu(MenuButton, PlacementMode.BottomEdgeAlignedLeft);
+        titleIcon.Tapped += (_, _) => openTabMenu(titleIcon, PlacementMode.BottomEdgeAlignedLeft);
+        void OnToolbarContext(object? sender, ContextRequestedEventArgs e)
+        {
+            e.Handled = true;
+            openTabMenu((Control)sender!, PlacementMode.Pointer);
+        }
+        Toolbar.ContextRequested     += OnToolbarContext;
+        ToolbarBand.ContextRequested += OnToolbarContext;
+
+        // Quick split buttons; shown only for sessions that can split (the instance
+        // can change on reconnect, so re-checked whenever the window is activated).
+        SplitRightButton.Click += (_, _) => _panes()?.RequestSplit(SplitAxis.LeftRight);
+        SplitDownButton.Click  += (_, _) => _panes()?.RequestSplit(SplitAxis.TopBottom);
+        UpdateSplitButtons();
         Closing += OnWindowClosing;
 
         // When this floating window regains focus, hand it to the terminal so the
@@ -73,8 +85,39 @@ public partial class FloatingSessionWindow : Window
         Activated += OnWindowActivated;
     }
 
+    /// <summary>
+    /// Shows <paramref name="panel"/> (the session's SFTP browser) in the left column,
+    /// or collapses the column when null — on float, and whenever SFTP is opened or
+    /// closed, or the session disconnects or reconnects, while floating.
+    /// </summary>
+    internal void SetSftpPanel(Control? panel)
+    {
+        SftpHost.Content = panel;
+        SftpHost.IsVisible = SftpSplitter.IsVisible = panel is not null;
+
+        var columns = ContentGrid.ColumnDefinitions;
+        if (panel is not null)
+        {
+            // Restore the saved SFTP panel width (same setting used by the main window).
+            var savedWidth = SettingsService.Temp.LeftColumnWidthPx;
+            columns[0].Width = new GridLength(savedWidth > 0 ? savedWidth : 260, GridUnitType.Pixel);
+            columns[1].Width = new GridLength(4, GridUnitType.Pixel);
+        }
+        else
+        {
+            // No SFTP browser: collapse its columns so the terminal (and the title over
+            // it) starts at the window's left edge instead of after an empty gap.
+            columns[0].Width = new GridLength(0);
+            columns[1].Width = new GridLength(0);
+        }
+    }
+
+    private void UpdateSplitButtons() =>
+        SplitRightButton.IsVisible = SplitDownButton.IsVisible = _panes() is not null;
+
     private void OnWindowActivated(object? sender, EventArgs e)
     {
+        UpdateSplitButtons();
         var terminal = TerminalHost.GetVisualDescendants().OfType<TerminalControl>().FirstOrDefault();
         if (terminal is null) return;
         if (terminal.IsLoaded)
@@ -127,6 +170,9 @@ public partial class FloatingSessionWindow : Window
             TitleText.Text = text;
         }
     }
+
+    /// <summary>Docks the session back into the main window (same as the Dock Back button).</summary>
+    internal void RequestDockBack() => OnDockBackClicked(this, new RoutedEventArgs());
 
     private void OnDockBackClicked(object? sender, RoutedEventArgs e)
     {

@@ -3,8 +3,8 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using Iciclecreek.Terminal;
 using System.Runtime.InteropServices;
-using TermThing.Configuration;
-using TermThing.Views;
+using Avalonia;
+using TermThing.Panes;
 
 namespace TermThing.Sessions.Launchers;
 
@@ -31,27 +31,19 @@ public sealed class LocalSessionLauncher : ISessionLauncher
             ? DefaultShell()
             : settings.Process;
 
-        // Use the persisted font size if one has been set via Ctrl+Wheel
-        var fontSize = SettingsService.Temp.TerminalFontSize > 0
-            ? SettingsService.Temp.TerminalFontSize
-            : 14;
-
-        var tc = new TerminalControl
-        {
-            Process = process,
-            ProcessArgs = settings.Args,
-            Background = Brushes.Black,
-            Foreground = Brushes.LightGray,
-            FontFamily = FontFamily.Parse("fonts:CascadiaCode#Cascadia Code"),
-            FontSize = fontSize,
-        };
-
-        // Attach terminal mouse enhancements (Ctrl+RightClick menu, Ctrl+Wheel font size)
-        TerminalContextMenuBehavior.Attach(tc, definition, _saveConfig);
-
         // TerminalView.OnLoaded auto-launches the process when Process is non-empty and
         // the control enters the visual tree — no explicit LaunchProcess() call needed here.
-        return Task.FromResult<ISessionInstance>(new LocalSessionInstance(tc, definition.Name));
+        // Split panes run the same shell, starting in the folder of the pane they split from.
+        TerminalControl CreateTerminal(string? startIn)
+        {
+            var tc = TerminalFactory.Create(definition, _saveConfig);
+            tc.Process = process;
+            tc.ProcessArgs = settings.Args;
+            if (!string.IsNullOrEmpty(startIn)) tc.StartingDirectory = startIn;
+            return tc;
+        }
+
+        return Task.FromResult<ISessionInstance>(new LocalSessionInstance(CreateTerminal, definition.Name));
     }
 
     private static string DefaultShell()
@@ -64,31 +56,67 @@ public sealed class LocalSessionLauncher : ISessionLauncher
 
 internal sealed class LocalSessionInstance : ISessionInstance
 {
-    private readonly TerminalControl _tc;
+    private readonly Func<string?, TerminalControl> _createTerminal;
+    private readonly PaneLayoutView _panes;
 
-    public LocalSessionInstance(TerminalControl tc, string title)
+    public LocalSessionInstance(Func<string?, TerminalControl> createTerminal, string title)
     {
-        _tc = tc;
+        _createTerminal = createTerminal;
         Title = title;
 
-        TerminalView.AddTitleChangedHandler(_tc, (_, e) =>
+        var first = createTerminal(null);
+        TerminalView.AddTitleChangedHandler(first, (_, e) =>
         {
             if (!e.Handled) { Title = e.Title; e.Handled = true; }
         });
 
-        _tc.ProcessExited += (_, _) =>
-            Dispatcher.UIThread.Post(() => SessionEnded?.Invoke(this, EventArgs.Empty));
+        _panes = new PaneLayoutView(first)
+        {
+            CellSizeProvider = () => new Size(Terminal?.CharWidth ?? 0, Terminal?.CharHeight ?? 0),
+            SplitRequested   = Split,
+            CloseRequested   = pane => ClosePane((TerminalControl)pane),
+        };
+        WatchExit(first);
     }
 
-    public Control TabContent => _tc;
-    public TerminalControl? Terminal => _tc;
+    public Control TabContent => _panes;
+    public TerminalControl? Terminal => _panes.ActivePane as TerminalControl;
+    public IReadOnlyList<TerminalControl> Terminals => [.. _panes.Panes.OfType<TerminalControl>()];
+    public PaneLayoutView? Panes => _panes;
     public Control? SftpPanel => null;
     public string Title { get; private set; }
     public event EventHandler? SessionEnded;
 
+    private void Split(SplitAxis axis)
+    {
+        var startIn = Terminal?.CurrentDirectory;
+        var tc = _createTerminal(startIn);
+        WatchExit(tc);
+        if (!_panes.AddPane(tc, axis))
+            try { tc.Kill(); } catch { }
+    }
+
+    /// <summary>A pane whose shell exits closes; the session ends with its last pane.</summary>
+    private void WatchExit(TerminalControl tc)
+    {
+        tc.ProcessExited += (_, _) => Dispatcher.UIThread.Post(() =>
+        {
+            if (!_panes.Panes.Contains(tc)) return;   // already closed from the UI
+            if (_panes.PaneCount > 1) _panes.RemovePane(tc);
+            else SessionEnded?.Invoke(this, EventArgs.Empty);
+        });
+    }
+
+    private void ClosePane(TerminalControl tc)
+    {
+        if (!_panes.RemovePane(tc)) return;
+        try { tc.Kill(); } catch { }
+    }
+
     public void Kill()
     {
-        try { _tc.Kill(); } catch { }
+        foreach (var tc in Terminals)
+            try { tc.Kill(); } catch { }
     }
 
     public void Dispose() => Kill();
