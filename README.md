@@ -7,7 +7,7 @@
 ## Features
 
 - **tmux api integration**
-  - native UX panes/windows through tmux api
+  - native UX panes/windows/control through tmux api
 - **sftp browser**
   - always on file explorer
 - **tabbed interface with floating windows**
