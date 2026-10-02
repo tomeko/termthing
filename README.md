@@ -1,24 +1,27 @@
 # TermThing
 
-Yet another terminal emulator thing. Desktop, portable, tab and floating window focused, SFTP baked-in cross-platform terminal application (inspired by MobaXTerm) built on .NET 10 and Avalonia. 
+Yet another terminal emulator thing inspired by the likes of MobaXTerm. Cross-platform desktop application built on dotnet 10/Avalonia, built on the shoulders of some really awesome dotnet libraries.
 
-<img src="doc/images/tt_ss1.png" style="width=50%"/>
-
-> Early development, expect rough edges.
+<img src="doc/images/tt_ss2.png" style="width=50%"/>
 
 ## Features
 
-- **Built-in SFTP browser**
-- **Floating tab windows**
-- **Integrated text editor**
-- **Tail / follow any file**
-- **Docker monitor panel with Docker log tails**
-- **Portable JSON config**
+- **tmux api integration**
+  - native UX panes/windows through tmux api
+- **sftp browser**
+  - always on file explorer
+- **tabbed interface with floating windows**
+  - for those who aren't TUI obsessed
+- **text editor with syntax highlighting**
+  - quick edits
+- **docker monitor, tail log windows, portable JSON config**
 
-### Todo
+## Status
+It's a terminal emulator built by some random internet stranger. Don't assume this is battle-tested or comes with any warranty. That being said I built it for me and use it as a daily driver, among my many vibe-by-flight projects this isn't one of them.
 
-- **Serial support**
-- **tmux API integration**
+## Docs
+
+_todo_
 
 ## Requirements
 
@@ -45,7 +48,7 @@ dotnet run --project src/TermThing.csproj
 ```
 ## FAQ
 
-### Q. How much of this codebase is LLM-driven?
+### Q. 
 
 ### A.
 <img src="./doc/images/arnoldyeah.jpg" style="width: 200px">
