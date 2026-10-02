@@ -118,13 +118,15 @@ internal static class MessageDialog
             },
         };
 
-        okBtn.Click    += (_, _) => dialog.Close(true);
-        cancelBtn.Click += (_, _) => dialog.Close(false);
+        // The buttons settle the result before closing: Closed fires during Close(), ahead
+        // of anything waiting on ShowDialog's task, so it may only ever be the fallback.
+        okBtn.Click    += (_, _) => { tcs.TrySetResult(true);  dialog.Close(); };
+        cancelBtn.Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
         dialog.Closed  += (_, _) => tcs.TrySetResult(false); // fallback if closed via X
         dialog.Opened  += (_, _) => okBtn.Focus(NavigationMethod.Tab);
 
         if (owner != null)
-            _ = dialog.ShowDialog<bool>(owner).ContinueWith(t => tcs.TrySetResult(t.Result), TaskScheduler.Default);
+            _ = dialog.ShowDialog(owner);
         else
             dialog.Show();
 

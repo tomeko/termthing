@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+        xmlns:views="clr-namespace:TermThing.Views"
         x:Class="TermThing.Views.FloatingSessionWindow"
         Title="Session"
         RequestedThemeVariant="Dark"
@@ -20,53 +21,63 @@
         </Style>
     </Window.Styles>
 
-    <DockPanel>
+    <!-- One grid for toolbar and content, so the toolbar's title sits over the terminal
+         column and follows the SFTP splitter, like the tab strip in the main window.
+         Columns: optional SFTP panel | splitter | terminal. -->
+    <Grid x:Name="ContentGrid" ColumnDefinitions="260,4,*" RowDefinitions="Auto,*">
 
-        <!-- Toolbar: session title + Dock Back button -->
-        <Grid DockPanel.Dock="Top"
+        <!-- Toolbar band across the full width (also right-clickable for the tab menu). -->
+        <Border x:Name="ToolbarBand" Grid.Row="0" Grid.ColumnSpan="3" Background="#1e1e1e"/>
+
+        <!-- Toolbar: icon + title + TMUX badge on the left; pane controls + Dock Back on the right.
+             Right-click anywhere on it (or click the icon) for the tab menu; the badge has tmux's. -->
+        <Grid x:Name="Toolbar"
+              Grid.Row="0" Grid.Column="2"
               Background="#1e1e1e"
-              ColumnDefinitions="Auto,*,Auto"
+              ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto"
               Margin="8,4">
             <materialIcons:MaterialIcon x:Name="TitleIcon"
                                         Grid.Column="0"
                                         Width="16" Height="16"
                                         VerticalAlignment="Center"
+                                        Cursor="Hand"
                                         Margin="0,0,6,0"/>
             <TextBlock x:Name="TitleText"
                        Grid.Column="1"
                        VerticalAlignment="Center"
                        Foreground="#cccccc"
                        FontSize="13"/>
+            <ContentControl x:Name="TmuxBadgeHost"
+                            Grid.Column="2"
+                            Margin="8,0,0,0"
+                            VerticalAlignment="Center"/>
+            <!-- Pane controls: TMUX / SESSION, then zoom, close, splits. -->
+            <views:PaneToolbar x:Name="PaneToolbar" Grid.Column="4" Margin="0,0,8,0"/>
             <Button x:Name="DockBackButton"
-                    Grid.Column="2"
+                    Grid.Column="5"
                     Content="⤵ Dock Back"
                     Padding="8,3"/>
         </Grid>
 
-        <!-- Content area: optional SFTP panel | splitter | terminal -->
-        <Grid x:Name="ContentGrid" ColumnDefinitions="260,4,*">
+        <!-- SFTP panel — hidden by default, shown when session has SFTP -->
+        <Border Grid.Row="1" Grid.Column="0" Classes="pane">
+            <ContentControl x:Name="SftpHost"
+                            IsVisible="False"
+                            Background="#252526"/>
+        </Border>
 
-            <!-- SFTP panel — hidden by default, shown when session has SFTP -->
-            <Border Grid.Column="0" Classes="pane">
-                <ContentControl x:Name="SftpHost"
-                                IsVisible="False"
-                                Background="#252526"/>
-            </Border>
+        <GridSplitter x:Name="SftpSplitter"
+                      Grid.Row="1" Grid.Column="1"
+                      Background="#444"
+                      Width="4"
+                      IsVisible="False"
+                      ResizeDirection="Columns"
+                      DragCompleted="OnSftpSplitterDragCompleted"/>
 
-            <GridSplitter x:Name="SftpSplitter"
-                          Grid.Column="1"
-                          Background="#444"
-                          Width="4"
-                          IsVisible="False"
-                          ResizeDirection="Columns"
-                          DragCompleted="OnSftpSplitterDragCompleted"/>
-
-            <!-- Terminal host -->
-            <Border Grid.Column="2" Classes="pane">
-                <ContentControl x:Name="TerminalHost"/>
-            </Border>
-        </Grid>
-
-    </DockPanel>
+        <!-- Terminal host -->
+        <Border Grid.Row="1" Grid.Column="2" Classes="pane">
+            <ContentControl x:Name="TerminalHost"/>
+        </Border>
+    </Grid>
 
 </Window>

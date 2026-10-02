@@ -8,7 +8,7 @@ public partial class SessionEndedOverlay : UserControl
     public event EventHandler? ReconnectRequested;
     public event EventHandler? CloseRequested;
 
-    public SessionEndedOverlay(string? reason = null)
+    public SessionEndedOverlay(string? reason = null, string? hint = null)
     {
         InitializeComponent();
 
@@ -16,6 +16,12 @@ public partial class SessionEndedOverlay : UserControl
         {
             ReasonText.Text = reason;
             ReasonText.IsVisible = true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(hint))
+        {
+            HintText.Text = hint;
+            HintText.IsVisible = true;
         }
 
         // Default focus to Close button so Enter/Space close the tab.

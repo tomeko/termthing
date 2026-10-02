@@ -43,6 +43,28 @@ public static class OsFileLauncher
     }
 
     /// <summary>
+    /// Opens <paramref name="localPath"/> in the OS default application for its type,
+    /// without a chooser. Only call this for types whose default handler is a viewer —
+    /// for executables and scripts the default handler runs them.
+    /// </summary>
+    public static void OpenWithDefaultApp(string localPath)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName        = localPath,
+                UseShellExecute = true,
+            });
+        }
+        else
+        {
+            // open / xdg-open already use the default application.
+            OpenWithOsDialog(localPath);
+        }
+    }
+
+    /// <summary>
     /// Launches <paramref name="appPath"/> with the given <paramref name="localFile"/>.
     /// If <paramref name="argsTemplate"/> contains <c>{file}</c> it is replaced by the
     /// quoted local file path; otherwise the file path is appended as a lone argument.

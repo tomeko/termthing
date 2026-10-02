@@ -47,6 +47,7 @@ public partial class SshConnectDialog : Window
     public bool    EnableSftp      { get; private set; }
     public bool    DeferInitialization { get; private set; }
     public string? ProxyCommand    { get; private set; }
+    public string? TmuxAutoAttach  { get; private set; }
     public bool    SaveAsSession   { get; private set; }
     public string? SessionName     { get; private set; }
     /// <summary>True when the user clicked "Save" rather than "Connect".</summary>
@@ -77,6 +78,10 @@ public partial class SshConnectDialog : Window
         // overrides this immediately below.
         SftpCheckBox.IsChecked = true;
 
+        // Auto-attach types into the first prompt, which Defer initialization says may not be a shell.
+        DeferInitCheckBox.IsCheckedChanged += (_, _) =>
+            TmuxSessionTextBox.IsEnabled = DeferInitCheckBox.IsChecked != true;
+
         if (prefill is not null)
         {
             HostTextBox.Text     = prefill.Host;
@@ -86,6 +91,7 @@ public partial class SshConnectDialog : Window
             SftpCheckBox.IsChecked = prefill.EnableSftp;
             DeferInitCheckBox.IsChecked = prefill.DeferInitialization;
             ProxyCommandTextBox.Text = prefill.ProxyCommand;
+            TmuxSessionTextBox.Text  = prefill.TmuxAutoAttach;
 
             foreach (var hop in prefill.JumpHosts)
                 _jumpItems.Add(MakeListItem(hop));
@@ -175,6 +181,8 @@ public partial class SshConnectDialog : Window
         EnableSftp   = SftpCheckBox.IsChecked == true;
         DeferInitialization = DeferInitCheckBox.IsChecked == true;
         ProxyCommand = string.IsNullOrWhiteSpace(ProxyCommandTextBox.Text) ? null : ProxyCommandTextBox.Text.Trim();
+        if (!TryReadTmuxSession(out var tmuxSession)) return;
+        TmuxAutoAttach = tmuxSession;
 
         if (_editMode)
         {
@@ -211,6 +219,8 @@ public partial class SshConnectDialog : Window
         EnableSftp   = SftpCheckBox.IsChecked == true;
         DeferInitialization = DeferInitCheckBox.IsChecked == true;
         ProxyCommand = string.IsNullOrWhiteSpace(ProxyCommandTextBox.Text) ? null : ProxyCommandTextBox.Text.Trim();
+        if (!TryReadTmuxSession(out var tmuxSession)) return;
+        TmuxAutoAttach = tmuxSession;
 
         SaveAsSession = true;  // Save button always persists the session
         SessionName   = SessionNameTextBox.Text?.Trim();
@@ -219,6 +229,18 @@ public partial class SshConnectDialog : Window
 
         SaveOnly = true;
         Close(true);
+    }
+
+    /// <summary>tmux rewrites ':' and '.' in session names, so the name would never match on reattach.</summary>
+    private bool TryReadTmuxSession(out string? name)
+    {
+        name = string.IsNullOrWhiteSpace(TmuxSessionTextBox.Text) ? null : TmuxSessionTextBox.Text.Trim();
+        if (name is not null && name.IndexOfAny([':', '.']) >= 0)
+        {
+            ShowError("tmux session names can't contain ':' or '.'.");
+            return false;
+        }
+        return true;
     }
 
     private void ShowError(string msg)

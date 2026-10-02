@@ -38,16 +38,10 @@ Built-in updater will notify/pull/update from github releases
 Requires the .NET 10 SDK.
 
 ```powershell
-git clone --recurse-submodules https://github.com/tomeko/termthing
+git clone https://github.com/tomeko/termthing
 cd termthing
 dotnet build src/TermThing.sln
 dotnet run --project src/TermThing.csproj
-```
-
-If you already cloned without `--recurse-submodules`:
-
-```powershell
-git submodule update --init --recursive
 ```
 ## FAQ
 

@@ -22,8 +22,8 @@
                     Orientation="Horizontal"
                     HorizontalAlignment="Right"
                     Spacing="8">
-            <Button Content="Move" MinWidth="80" Click="OnMoveClicked" IsDefault="True"/>
-            <Button Content="Cancel" MinWidth="80" Click="OnCancelClicked" IsCancel="True"/>
+            <Button Content="Move" MinWidth="80" Click="OnMoveClicked"/>
+            <Button Content="Cancel" MinWidth="80" Click="OnCancelClicked" IsCancel="True" IsDefault="True"/>
         </StackPanel>
     </Grid>
 </Window>

@@ -1,7 +1,6 @@
 using Porta.Pty;
 using Renci.SshNet;
 using System.IO;
-using System.Reflection;
 using System.Threading;
 
 namespace TermThing.Ssh;
@@ -22,7 +21,7 @@ public sealed class SshPtyConnection : IPtyConnection
     /// Raised once when the SSH shell exits (either clean exit or abrupt disconnect).
     /// More reliable than <see cref="ProcessExited"/> for SSH connections because
     /// that event is only raised by <see cref="Iciclecreek.Terminal.TerminalControl"/>
-    /// when it owns the process launch — which we bypass via reflection.
+    /// when it owns the process launch — an attached connection only reports EOF.
     /// </summary>
     public event EventHandler? ConnectionClosed;
 
@@ -42,6 +41,22 @@ public sealed class SshPtyConnection : IPtyConnection
     }
 
     public Stream ReaderStream => _readerStream;
+
+    /// <summary>
+    /// Tells the terminal to read through <see cref="BlockingShellReaderStream.ReadAsync(byte[], int, int, CancellationToken)"/>.
+    /// Without it the terminal falls back to a synchronous <c>Read</c>, which bypasses the
+    /// shell-closed detection and leaves the tab open after <c>logout</c>.
+    /// </summary>
+    public bool SupportsCancellableRead => true;
+
+    /// <summary>
+    /// Injects <paramref name="command"/> once the shell is idle at a prompt and hides
+    /// its echo. The command must contain <see cref="ShellIntegrationInjector.Sentinel"/>.
+    /// </summary>
+    public void ArmShellIntegration(string command) => _readerStream.Injector.Arm(command);
+
+    /// <summary>Types <paramref name="line"/> into the shell once it is idle at a prompt (echo not hidden).</summary>
+    public void SendWhenIdle(string line) => _readerStream.Injector.SendWhenIdle(line);
     public Stream WriterStream => _shell;
     public int Pid => 0;
     public int ExitCode { get; private set; }
@@ -54,14 +69,26 @@ public sealed class SshPtyConnection : IPtyConnection
     public event EventHandler<PtyExitedEventArgs>? ProcessExited;
 #pragma warning restore CS0067
 
+    /// <summary>
+    /// True when the close came from the SSH connection failing rather than this shell
+    /// exiting. Other channels on the connection are gone too.
+    /// </summary>
+    public bool ClosedByError { get; private set; }
+
     private void OnClientError(object? sender, Renci.SshNet.Common.ExceptionEventArgs e)
     {
+        ClosedByError = true;
         _readerStream.SignalClosed();
         try { _shell.Close(); } catch { }
         FireConnectionClosed();
     }
 
-    public bool WaitForExit(int milliseconds) => _readerStream.HasClosed || !_client.IsConnected;
+    public bool WaitForExit(int milliseconds)
+    {
+        if (_readerStream.HasClosed || !_client.IsConnected) return true;
+        // The terminal calls this right after EOF to let the exit land; actually wait for it.
+        return _readerStream.WaitForClosed(milliseconds) || !_client.IsConnected;
+    }
 
     internal void FireConnectionClosed()
     {
@@ -69,36 +96,26 @@ public sealed class SshPtyConnection : IPtyConnection
             ConnectionClosed?.Invoke(this, EventArgs.Empty);
  }
 
+    /// <summary>
+    /// When false, <see cref="Kill"/> and <see cref="Dispose"/> close only this shell
+    /// channel and leave the client alone. TermThing's SSH sessions set it false on every
+    /// pane: the panes share one client, which the session disconnects itself.
+    /// </summary>
+    public bool OwnsClient { get; init; } = true;
+
     public void Kill()
     {
         _readerStream.SignalClosed();
         try { _shell.Close(); } catch { }
-        try { if (_client.IsConnected) _client.Disconnect(); } catch { }
+        if (OwnsClient)
+            try { if (_client.IsConnected) _client.Disconnect(); } catch { }
     }
 
     public void Resize(int cols, int rows)
     {
-        // SSH.NET doesn't expose a public window-resize API on ShellStream, so we reach
-        // through to the underlying channel via reflection.
         try
         {
-            var flags = BindingFlags.NonPublic | BindingFlags.Instance;
-            object? channel = null;
-
-            foreach (var name in new[] { "_channel", "Channel", "_session" })
-            {
-                var field = typeof(ShellStream).GetField(name, flags);
-                if (field != null) { channel = field.GetValue(_shell); break; }
-            }
-
-            if (channel == null) return;
-
-            var method = channel.GetType().GetMethod("SendWindowChangeRequest",
-                BindingFlags.Public | BindingFlags.Instance,
-                binder: null,
-                types: [typeof(uint), typeof(uint), typeof(uint), typeof(uint)],
-                modifiers: null);
-            method?.Invoke(channel, [(uint)cols, (uint)rows, 0u, 0u]);
+            _shell.ChangeWindowSize((uint)cols, (uint)rows, 0, 0);
         }
         catch
         {
@@ -114,7 +131,8 @@ public sealed class SshPtyConnection : IPtyConnection
         _readerStream.SignalClosed();
         try { _readerStream.Dispose(); } catch { }
         try { _shell.Dispose(); } catch { }
-        try { _client.Dispose(); } catch { }
+        if (OwnsClient)
+            try { _client.Dispose(); } catch { }
     }
 
     // -------------------------------------------------------------------------
@@ -139,12 +157,21 @@ public sealed class SshPtyConnection : IPtyConnection
         private readonly SshPtyConnection _owner;
         private readonly SemaphoreSlim _dataReady = new(0, int.MaxValue);
         private readonly CancellationTokenSource _closedCts = new();
+        private readonly Queue<byte> _outbox = new();
+        private static readonly TimeSpan DataPollInterval = TimeSpan.FromMilliseconds(100);
+
+        public ShellIntegrationInjector Injector { get; }
 
         public BlockingShellReaderStream(ShellStream shell, SshClient client, SshPtyConnection owner)
         {
             _shell = shell;
             _client = client;
             _owner = owner;
+            Injector = new ShellIntegrationInjector(shell, released =>
+            {
+                Enqueue(released);
+                OnDataReceived(null, EventArgs.Empty);
+            });
             shell.DataReceived += OnDataReceived;
             // Fired when the remote shell exits cleanly (e.g. user types "exit").
             // Without this, ReadAsync would loop forever: Read() returns 0,
@@ -181,6 +208,12 @@ public sealed class SshPtyConnection : IPtyConnection
         /// </summary>
         public bool HasClosed { get; private set; }
 
+        public bool WaitForClosed(int milliseconds)
+        {
+            try { return _closedCts.Token.WaitHandle.WaitOne(milliseconds); }
+            catch (ObjectDisposedException) { return true; }
+        }
+
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
@@ -192,7 +225,7 @@ public sealed class SshPtyConnection : IPtyConnection
         }
         public override void Flush() { }
         public override int Read(byte[] buffer, int offset, int count)
-            => _shell.Read(buffer, offset, count);
+            => ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
         public override long Seek(long offset, SeekOrigin origin)
             => throw new NotSupportedException();
         public override void SetLength(long value)
@@ -206,35 +239,87 @@ public sealed class SshPtyConnection : IPtyConnection
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken, _closedCts.Token);
 
-            while (!linked.IsCancellationRequested)
+            while (true)
             {
-                // Try a non-blocking read from the ShellStream buffer.
-                int read;
-                try { read = _shell.Read(buffer, offset, count); }
-                catch { return 0; }
+                // Output the injector rewrote or released after a hold timeout goes first.
+                if (TryDequeue(buffer, offset, count) is var queued and > 0)
+                    return queued;
 
-                if (read > 0)
-                    return read;
+                // Only read what is already buffered: ShellStream.Read blocks until data
+                // arrives, and a blocked read could not be woken to deliver released output.
+                bool dataAvailable;
+                try { dataAvailable = _shell.DataAvailable; }
+                catch { break; }
+
+                if (dataAvailable)
+                {
+                    int read;
+                    try { read = _shell.Read(buffer, offset, count); }
+                    catch { break; }
+
+                    if (read > 0)
+                    {
+                        var rewritten = Injector.Process(buffer.AsSpan(offset, read), _closedCts.Token);
+                        if (rewritten is null)
+                            return read;
+                        Enqueue(rewritten);
+                        continue;
+                    }
+                }
 
                 // Buffer is empty — check if the session is actually closed.
+                if (linked.IsCancellationRequested)
+                    break;
                 bool isConnected;
                 try { isConnected = _client.IsConnected; }
-                catch (ObjectDisposedException) { return 0; }
+                catch (ObjectDisposedException) { break; }
                 if (!isConnected)
-                    return 0;
+                    break;
 
-                // Wait until SSH.NET signals that new data has arrived.
+                // Wait until SSH.NET signals that new data has arrived (or output is released).
+                // Bounded, so a signal that lands before DataAvailable flips cannot stall the reader.
                 try
                 {
-                    await _dataReady.WaitAsync(linked.Token).ConfigureAwait(false);
+                    await _dataReady.WaitAsync(DataPollInterval, linked.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
-                    return 0;
+                    // Loop once more: a closed shell may still have its last output
+                    // (the "logout" line) buffered, and the outbox may hold bytes.
+                    if (!cancellationToken.IsCancellationRequested
+                        && (_shell.DataAvailable || HasQueued))
+                        continue;
+                    break;
                 }
             }
 
-            return 0;
+            // A cancelled caller (detach / teardown) must see a cancellation, not EOF —
+            // that is the SupportsCancellableRead contract. Only a closed shell is EOF.
+            cancellationToken.ThrowIfCancellationRequested();
+            return TryDequeue(buffer, offset, count);
+        }
+
+        private bool HasQueued
+        {
+            get { lock (_outbox) return _outbox.Count > 0; }
+        }
+
+        private void Enqueue(byte[] bytes)
+        {
+            if (bytes.Length == 0) return;
+            lock (_outbox)
+                foreach (var b in bytes) _outbox.Enqueue(b);
+        }
+
+        private int TryDequeue(byte[] buffer, int offset, int count)
+        {
+            lock (_outbox)
+            {
+                int n = Math.Min(count, _outbox.Count);
+                for (int i = 0; i < n; i++)
+                    buffer[offset + i] = _outbox.Dequeue();
+                return n;
+            }
         }
 
         protected override void Dispose(bool disposing)

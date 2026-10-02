@@ -8,7 +8,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <IsPackable>false</IsPackable>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
-    <ApplicationIcon>Assets\tt_ico2.ico</ApplicationIcon>
+    <ApplicationIcon>Assets\tt_logo2.ico</ApplicationIcon>
     <!-- Default version for dev builds; CI overrides via -p:Version and -p:AssemblyInformationalVersion -->
     <Version>0.0.0-dev</Version>
     <AssemblyInformationalVersion>0.0.0-dev</AssemblyInformationalVersion>
@@ -22,28 +22,28 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="Assets\tt_ico2.ico" />
+    <Content Include="Assets\tt_logo2.ico" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="12.0.2" />
+    <PackageReference Include="Avalonia" Version="12.0.4" />
     <PackageReference Include="Avalonia.AvaloniaEdit" Version="12.*" />
-    <PackageReference Include="Avalonia.Desktop" Version="12.0.2" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
     <PackageReference Include="Avalonia.Controls.DataGrid" Version="12.0.0" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.2" />
-    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.2" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.4" />
     <PackageReference Include="AvaloniaEdit.TextMate" Version="12.*" />
     <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.0.4" />
     <PackageReference Include="Fonts.Avalonia.CascadiaCode" Version="0.14.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="Material.Icons.Avalonia" Version="2.*" />
-    <PackageReference Include="SSH.NET" Version="2024.2.0" />
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="TextMateSharp.Grammars" Version="2.0.3" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Local fork of Iciclecreek.Avalonia.Terminal with re-parenting support -->
-    <ProjectReference Include="..\Iciclecreek.Avalonia.Terminal\src\Iciclecreek.Avalonia.TerminalWindow\Iciclecreek.Avalonia.Terminal.csproj" />
+    <!-- Upstream release; pinned. Pulls in XTerm.NET and Porta.Pty transitively. -->
+    <PackageReference Include="Iciclecreek.Avalonia.Terminal" Version="4.0.2" />
   </ItemGroup>
 
 </Project>

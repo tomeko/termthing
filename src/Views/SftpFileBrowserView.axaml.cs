@@ -89,7 +89,9 @@ public sealed class SftpEntry : INotifyPropertyChanged
     };
 
     public string ModifiedDisplay => Modified.HasValue
-        ? Modified.Value.ToString("yyyy-MM-dd HH:mm")
+        ? Modified.Value.ToString(SettingsService.App.SftpUse12HourTime
+            ? "yyyy-MM-dd h:mm tt"
+            : "yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)
         : string.Empty;
 
     public string OwnerDisplay => IsParentLink ? string.Empty : OwnerId.ToString();
@@ -134,6 +136,10 @@ public partial class SftpFileBrowserView : UserControl
     private MenuItem _menuNewDirectory = null!;
     private MenuItem _menuNewFile = null!;
     private Separator _blankAreaSeparator = null!;
+    private Separator _itemSeparator = null!;
+    private Separator _uploadSeparator = null!;
+    private MenuItem _menuUploadFiles = null!;
+    private MenuItem _menuUploadFolder = null!;
     private TransferProgressOverlay _transferOverlay = null!;
     private Border _dropOverlay = null!;
 
@@ -155,6 +161,12 @@ public partial class SftpFileBrowserView : UserControl
     private Point _dragOutStartPos;
     private PointerPressedEventArgs? _dragOutPointerArgs;
     private bool _dragOutInProgress;
+    private bool _dragOutReleased;       // button released while a drag-out was still preparing
+
+    // Where drag-out stages files for the OS. Anything dropped from here is our own
+    // drag coming back, never something the user meant to upload.
+    private static readonly string DragOutTempRoot =
+        Path.Combine(Path.GetTempPath(), "termthing", "dragout");
 
     // Internal drag tracking — while a drag originated from THIS view is in flight,
     // _internalDragSource holds the source entry. OnDrop checks this to distinguish
@@ -234,6 +246,10 @@ public partial class SftpFileBrowserView : UserControl
         _menuNewDirectory = this.FindControl<MenuItem>("MenuNewDirectory")!;
         _menuNewFile      = this.FindControl<MenuItem>("MenuNewFile")!;
         _blankAreaSeparator = this.FindControl<Separator>("BlankAreaSeparator")!;
+        _itemSeparator      = this.FindControl<Separator>("ItemSeparator")!;
+        _uploadSeparator    = this.FindControl<Separator>("UploadSeparator")!;
+        _menuUploadFiles    = this.FindControl<MenuItem>("MenuUploadFiles")!;
+        _menuUploadFolder   = this.FindControl<MenuItem>("MenuUploadFolder")!;
         _transferOverlay       = this.FindControl<TransferProgressOverlay>("TransferOverlay")!;
         _dropOverlay           = this.FindControl<Border>("DropOverlay")!;
 
@@ -266,6 +282,11 @@ public partial class SftpFileBrowserView : UserControl
         _filesGrid.AddHandler(PointerPressedEvent,  OnFilesGridPointerPressed,  RoutingStrategies.Tunnel);
         _filesGrid.AddHandler(PointerMovedEvent,    OnFilesGridPointerMoved,    RoutingStrategies.Tunnel);
         _filesGrid.AddHandler(PointerReleasedEvent, OnFilesGridPointerReleased, RoutingStrategies.Tunnel);
+
+        // Decides which context menu opens. Tunnel, so it runs before the ContextMenu's own
+        // (bubbling) handler on the grid opens it.
+        _filesGrid.AddHandler(ContextRequestedEvent, OnFilesGridContextRequested,
+                              RoutingStrategies.Tunnel, handledEventsToo: true);
 
         // F5 refresh at the panel level (tunnel) so it works regardless of which
         // sub-control has focus — the grid-scoped OnFilesGridKeyDown only fires when
@@ -326,17 +347,27 @@ public partial class SftpFileBrowserView : UserControl
 
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                Entries.Clear();
+                var listing = new List<SftpEntry>(files.Count + 1);
                 if (path != "/")
-                    Entries.Add(new SftpEntry
+                    listing.Add(new SftpEntry
                     {
                         IsDirectory  = true,
                         IsParentLink = true,
                         Name         = "..",
                         FullPath     = GetParentPath(path),
                     });
-                foreach (var entry in files)
+                listing.AddRange(files);
+
+                // Re-listing the folder already shown (a refresh, e.g. after a transfer)
+                // keeps the user's place: remember it before the rows are rebuilt.
+                (string? LastVisible, HashSet<string> Selected)? keep = path == _currentPath ? CaptureViewState() : null;
+
+                Entries.Clear();
+                foreach (var entry in listing)
                     Entries.Add(entry);
+
+                if (keep is not null)
+                    RestoreViewState(keep.Value);
                 _currentPath     = path;
                 _pathBox.Text    = _currentPath;
                 UpdateSyncButtonVisibility();
@@ -351,6 +382,49 @@ public partial class SftpFileBrowserView : UserControl
             _navigating = false;
             await Dispatcher.UIThread.InvokeAsync(() => _refreshButton.IsEnabled = true);
         }
+    }
+
+    /// <summary>
+    /// The last row currently on screen, plus the selected rows, by name. Names rather
+    /// than items because a refresh replaces every row object.
+    /// </summary>
+    private (string? LastVisible, HashSet<string> Selected) CaptureViewState()
+    {
+        var height = _filesGrid.Bounds.Height;
+        string? lastVisible = null;
+        double lastTop = double.MinValue;
+        foreach (var row in _filesGrid.GetVisualDescendants().OfType<DataGridRow>())
+        {
+            if (!row.IsVisible || row.DataContext is not SftpEntry entry) continue;
+            var top = row.TranslatePoint(new Point(0, 0), _filesGrid)?.Y;
+            if (top is null || top < 0 || top + row.Bounds.Height > height) continue;
+            if (top > lastTop) { lastTop = top.Value; lastVisible = entry.Name; }
+        }
+
+        var selected = _filesGrid.SelectedItems?.OfType<SftpEntry>().Select(e => e.Name)
+                           .ToHashSet(StringComparer.Ordinal) ?? [];
+        return (lastVisible, selected);
+    }
+
+    /// <summary>
+    /// Re-selects the remembered rows and scrolls the remembered last-visible row back
+    /// into view. Rebuilding the rows resets the grid to the top, and scrolling a row
+    /// into view from there brings it to the bottom edge — where it was.
+    /// </summary>
+    private void RestoreViewState((string? LastVisible, HashSet<string> Selected) state)
+    {
+        if (state.Selected.Count > 0 && _filesGrid.SelectedItems is { } sel)
+        {
+            foreach (var entry in Entries.Where(e => state.Selected.Contains(e.Name)))
+                sel.Add(entry);
+        }
+
+        if (state.LastVisible is null) return;
+        var target = Entries.FirstOrDefault(e => e.Name == state.LastVisible);
+        if (target is null) return;
+
+        // After layout, so the rebuilt rows exist to scroll among.
+        Dispatcher.UIThread.Post(() => _filesGrid.ScrollIntoView(target, null), DispatcherPriority.Loaded);
     }
 
     /// <summary>
@@ -634,8 +708,41 @@ public partial class SftpFileBrowserView : UserControl
     // Context menu
     // -----------------------------------------------------------------------
 
+    /// <summary>
+    /// Picks the menu from where the request came from. Done here rather than on pointer
+    /// press: a right-click while the menu is already open is consumed by the menu's
+    /// light-dismiss and never reaches the grid as a press, but the request that reopens
+    /// the menu still carries its position. A keyboard request has none and acts on the
+    /// selection.
+    /// </summary>
+    private void OnFilesGridContextRequested(object? sender, ContextRequestedEventArgs e)
+    {
+        _contextMenuOnBlankArea = e.TryGetPosition(_filesGrid, out var pos) && !IsOnSelection(pos);
+    }
+
+    private bool IsOnSelection(Point posInGrid)
+    {
+        var hit = GetEntryUnderPointer(posInGrid);
+        return hit != null && _filesGrid.SelectedItems?.Contains(hit) == true;
+    }
+
     private void OnContextMenuOpening(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        // Directory menu: actions on the folder being shown, never on a row.
+        bool directoryMode = _contextMenuOnBlankArea;
+        foreach (var item in new Control[] { _menuOpen, _menuOpenWith, _menuTail, _menuDownloadTo,
+                                             _menuRename, _menuDelete, _itemSeparator,
+                                             _menuProperties, _menuBookmarkFolder })
+            item.IsVisible = !directoryMode;
+        foreach (var item in new Control[] { _menuNewDirectory, _menuNewFile, _uploadSeparator,
+                                             _menuUploadFiles, _menuUploadFolder })
+            item.IsVisible = directoryMode;
+        if (directoryMode)
+        {
+            _menuNewDirectory.IsEnabled = _menuNewFile.IsEnabled = true;
+            return;
+        }
+
         // Selection-aware enable/disable. The DataGrid keeps multi-selection alive
         // on right-click (only switches selection if you right-click a non-selected
         // row), so SelectedItems is the authoritative list to reason about.
@@ -670,16 +777,11 @@ public partial class SftpFileBrowserView : UserControl
         // contextually meaningless for files or multi-selection.
         _menuProperties.IsVisible    = oneDir && _sshClient?.IsConnected == true;
         _menuBookmarkFolder.IsVisible = oneDir && _definition != null;
+        _itemSeparator.IsVisible      = _menuProperties.IsVisible || _menuBookmarkFolder.IsVisible;
 
-        // "New Directory" / "New File" act on the current folder, not any
-        // selection — disable when multiple rows are highlighted so the menu
-        // doesn't suggest the action is selection-relative.
-        bool canCreate = count <= 1;
-        _menuNewDirectory.IsEnabled = canCreate;
-        _menuNewFile.IsEnabled      = canCreate;
-
-        // Rebuild the "Download to ▶" submenu dynamically
+        // Rebuild the "Download to ▶" and "Open With ▶" submenus dynamically
         RebuildDownloadToSubMenu();
+        RebuildOpenWithSubMenu(single && allFiles ? selection[0] : null);
     }
 
     private async void OnMenuPropertiesClicked(object? sender, RoutedEventArgs e)
@@ -706,6 +808,60 @@ public partial class SftpFileBrowserView : UserControl
 
         if (!_bookmarksExpanded)
             SetBookmarksExpanded(true, save: true);
+    }
+
+    /// <summary>
+    /// Fills "Open With ▶": every configured application, the OS chooser, and a link
+    /// to manage the list. This is the deliberate path, so nothing here is filtered by
+    /// <see cref="FileOpenPolicy"/> — the user picks the handler themselves.
+    /// </summary>
+    private void RebuildOpenWithSubMenu(SftpEntry? entry)
+    {
+        _menuOpenWith.Items.Clear();
+        if (entry == null) return;
+
+        var extension = Path.GetExtension(entry.Name).ToLowerInvariant();
+        foreach (var app in SettingsService.App.Applications)
+        {
+            bool matches = app.Extensions.Count == 0 || app.Extensions.Contains(extension);
+            var appCopy = app;
+            var item = new MenuItem
+            {
+                Header     = app.IsDefault && matches ? $"{app.Name} (default)" : app.Name,
+                FontWeight = matches ? Avalonia.Media.FontWeight.SemiBold : Avalonia.Media.FontWeight.Normal,
+            };
+            item.Click += (_, _) => _ = OpenEntryWithAsync(entry, appCopy);
+            _menuOpenWith.Items.Add(item);
+        }
+
+        if (_menuOpenWith.Items.Count > 0)
+            _menuOpenWith.Items.Add(new Separator());
+
+        var choose = new MenuItem { Header = "Choose application…" };
+        choose.Click += (_, _) => _ = OpenEntryWithOsChooserAsync(entry);
+        _menuOpenWith.Items.Add(choose);
+
+        var manage = new MenuItem { Header = "Manage applications…" };
+        manage.Click += (_, _) => OpenApplicationsSettings();
+        _menuOpenWith.Items.Add(manage);
+    }
+
+    private async Task OpenEntryWithOsChooserAsync(SftpEntry entry)
+    {
+        var host = TopLevel.GetTopLevel(this) as Window;
+        if (host == null) return;
+        var displayHost = _sshClient is not null
+            ? $"{_sshClient.ConnectionInfo.Username}@{_sshClient.ConnectionInfo.Host}"
+            : _sftpClient.ConnectionInfo.Host;
+        var opener = new SftpFileOpener(_sftpClient, SessionEditorId, displayHost, host, _editorRegistry);
+        try
+        {
+            await opener.OpenWithOsChooserAsync(entry.FullPath);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Open failed: {ex.Message}");
+        }
     }
 
     private void RebuildDownloadToSubMenu()
@@ -755,7 +911,13 @@ public partial class SftpFileBrowserView : UserControl
 
     private void DownloadTo(string destDir)
     {
-        if (_filesGrid.SelectedItem is not SftpEntry entry || entry.IsParentLink) return;
+        // The whole selection, not just the focused row — SelectedItem is only the
+        // last-clicked entry, which made a multi-selection download a single file.
+        var entries = _filesGrid.SelectedItems?
+            .OfType<SftpEntry>()
+            .Where(x => !x.IsParentLink)
+            .ToList() ?? [];
+        if (entries.Count == 0) return;
 
         // Push to recent list (most-recent first, capped at 5, no duplicates)
         var recents = SettingsService.Temp.RecentDownloadFolders;
@@ -764,19 +926,22 @@ public partial class SftpFileBrowserView : UserControl
         if (recents.Count > 5) recents.RemoveRange(5, recents.Count - 5);
         SettingsService.SaveTemp();
 
-        _ = EnqueueDownloadAsync(entry, destDir);
+        _ = EnqueueDownloadAsync(entries, destDir);
     }
 
-    private async Task EnqueueDownloadAsync(SftpEntry entry, string destDir)
+    private async Task EnqueueDownloadAsync(IReadOnlyList<SftpEntry> entries, string destDir)
     {
         SetStatus("Building download list…");
         List<TransferJob> jobs;
         try
         {
+            // Remote listing only — no local directories are created until confirmed;
+            // the queue creates each file's directory as it downloads it.
             jobs = await Task.Run(() =>
             {
                 var list = new List<TransferJob>();
-                BuildDownloadJobsRecursive(entry, destDir, list);
+                foreach (var entry in entries)
+                    BuildDownloadJobsRecursive(entry, destDir, list);
                 return list;
             });
         }
@@ -787,8 +952,17 @@ public partial class SftpFileBrowserView : UserControl
         }
 
         SetStatus(null);
-        if (jobs.Count > 0)
-            _transferQueue.Enqueue(jobs);
+        if (jobs.Count == 0)
+        {
+            SetStatus("Nothing to download — the selection contains no files.");
+            return;
+        }
+
+        var host = TopLevel.GetTopLevel(this) as Window;
+        if (!await ShowTransferConfirmAsync("Download", jobs.Count, jobs.Sum(j => j.TotalBytes), destDir, host))
+            return;
+
+        _transferQueue.Enqueue(jobs);
     }
 
     private void BuildDownloadJobsRecursive(SftpEntry entry, string localDir, List<TransferJob> jobs)
@@ -796,7 +970,6 @@ public partial class SftpFileBrowserView : UserControl
         var localPath = Path.Combine(localDir, entry.Name);
         if (entry.IsDirectory)
         {
-            Directory.CreateDirectory(localPath);
             foreach (var child in _sftpClient.ListDirectory(entry.FullPath))
             {
                 if (child.Name == "." || child.Name == "..") continue;
@@ -1094,7 +1267,9 @@ public partial class SftpFileBrowserView : UserControl
             _editorRegistry);
         try
         {
-            await opener.OpenAsync(entry.FullPath);
+            var notOpened = await opener.OpenAsync(entry.FullPath, entry.Size);
+            if (notOpened != null)
+                SetStatus(notOpened);
         }
         catch (Exception ex)
         {
@@ -1210,10 +1385,10 @@ public partial class SftpFileBrowserView : UserControl
         e.Handled = true;
         if (!e.DataTransfer.Contains(DataFormat.File))
         {
-            // Not a file drag as far as this platform's backend is concerned. Surface what
-            // it *did* offer: on X11/Wayland a file manager may hand over only URI-list or
-            // toolkit-private types, which is invisible from the Windows side.
-            SetStatus($"Drag ignored — no file data. Offered: {DescribeOfferedFormats(e)}");
+            // Not a file drag as far as this platform's backend is concerned — including
+            // our own drag-out passing over the view on its way to the desktop. Nothing is
+            // reported here: drag-over fires continuously and the message would outlive the
+            // drag. OnDrop reports what was offered if something is actually dropped.
             e.DragEffects = DragDropEffects.None;
             ClearUploadDragState();
             return;
@@ -1291,6 +1466,28 @@ public partial class SftpFileBrowserView : UserControl
         }
     }
 
+    private async void OnMenuUploadFilesClicked(object? sender, RoutedEventArgs e)
+    {
+        var host = TopLevel.GetTopLevel(this);
+        if (host == null) return;
+        var files = await host.StorageProvider.OpenFilePickerAsync(
+            new FilePickerOpenOptions { Title = $"Upload to {_currentPath}", AllowMultiple = true });
+        var paths = files.Select(f => f.TryGetLocalPath()).OfType<string>().ToList();
+        if (paths.Count > 0)
+            await UploadLocalPathsAsync(paths, _currentPath);
+    }
+
+    private async void OnMenuUploadFolderClicked(object? sender, RoutedEventArgs e)
+    {
+        var host = TopLevel.GetTopLevel(this);
+        if (host == null) return;
+        var folders = await host.StorageProvider.OpenFolderPickerAsync(
+            new FolderPickerOpenOptions { Title = $"Upload folder to {_currentPath}", AllowMultiple = false });
+        var paths = folders.Select(f => f.TryGetLocalPath()).OfType<string>().ToList();
+        if (paths.Count > 0)
+            await UploadLocalPathsAsync(paths, _currentPath);
+    }
+
     private async void OnDrop(object? sender, DragEventArgs e)
     {
         var destDir = _dropTargetDir?.FullPath ?? _currentPath;
@@ -1331,6 +1528,14 @@ public partial class SftpFileBrowserView : UserControl
             if (!string.IsNullOrWhiteSpace(lp))
                 localPaths.Add(lp);
         }
+        // Our own drag-out coming back (dropped on this or another SFTP view): the files
+        // are TermThing's temp copies of remote files. Uploading them is never intended.
+        if (localPaths.Any(IsDragOutTempPath))
+        {
+            SetStatus("Drop ignored — these are TermThing's own drag-out files.");
+            return;
+        }
+
         if (localPaths.Count == 0)
         {
             // Files arrived but none resolved to a local path — e.g. a file manager
@@ -1340,6 +1545,15 @@ public partial class SftpFileBrowserView : UserControl
             return;
         }
 
+        await UploadLocalPathsAsync(localPaths, destDir);
+    }
+
+    /// <summary>
+    /// The one upload flow, shared by drop and the Upload menu items: scan locally,
+    /// confirm, check write access, then queue.
+    /// </summary>
+    private async Task UploadLocalPathsAsync(List<string> localPaths, string destDir)
+    {
         // Local-only scan: count files and compute size for the confirmation prompt
         var preview = new List<TransferJob>();
         await Task.Run(() =>
@@ -1356,8 +1570,8 @@ public partial class SftpFileBrowserView : UserControl
 
         // Confirmation
         var host = TopLevel.GetTopLevel(this) as Window;
-        var confirmed = await ShowUploadConfirmAsync(
-            preview.Count, preview.Sum(j => j.TotalBytes), destDir, host);
+        var confirmed = await ShowTransferConfirmAsync(
+            "Upload", preview.Count, preview.Sum(j => j.TotalBytes), destDir, host);
         if (!confirmed) return;
 
         // Check write permission
@@ -1378,6 +1592,17 @@ public partial class SftpFileBrowserView : UserControl
 
         if (jobs.Count == 0) return;
         _transferQueue.Enqueue(jobs);
+    }
+
+    private static bool IsDragOutTempPath(string localPath)
+    {
+        try
+        {
+            var full = Path.GetFullPath(localPath);
+            var root = Path.GetFullPath(DragOutTempRoot) + Path.DirectorySeparatorChar;
+            return full.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
     }
 
     /// <summary>
@@ -1409,9 +1634,16 @@ public partial class SftpFileBrowserView : UserControl
         }
     }
 
-    private static async Task<bool> ShowUploadConfirmAsync(
-        int fileCount, long totalBytes, string destPath, Window? owner)
+    /// <summary>
+    /// Confirms a transfer before anything moves. Cancel is the default button, so a
+    /// stray Enter or double-click can never start a transfer the user didn't mean.
+    /// Fails closed (returns false) when there is no window to show it on.
+    /// </summary>
+    private static async Task<bool> ShowTransferConfirmAsync(
+        string verb, int fileCount, long totalBytes, string destPath, Window? owner)
     {
+        if (owner == null) return false;
+
         bool confirmed = false;
 
         var sizeStr = totalBytes switch
@@ -1422,12 +1654,12 @@ public partial class SftpFileBrowserView : UserControl
             _                => $"{totalBytes} B",
         };
 
-        var okBtn     = new Button { Content = "Upload", Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
-        var cancelBtn = new Button { Content = "Cancel", IsCancel = true };
+        var okBtn     = new Button { Content = verb, Margin = new Thickness(0, 0, 8, 0) };
+        var cancelBtn = new Button { Content = "Cancel", IsCancel = true, IsDefault = true };
 
         var win = new Window
         {
-            Title  = "Confirm upload",
+            Title  = $"Confirm {verb.ToLowerInvariant()}",
             Width  = 400,
             CanResize = false,
             SizeToContent = SizeToContent.Height,
@@ -1440,7 +1672,7 @@ public partial class SftpFileBrowserView : UserControl
                 {
                     new TextBlock
                     {
-                        Text = $"Upload {fileCount} file{(fileCount != 1 ? "s" : "")} ({sizeStr}) to:\n{destPath}",
+                        Text = $"{verb} {fileCount} file{(fileCount != 1 ? "s" : "")} ({sizeStr}) to:\n{destPath}",
                         TextWrapping = Avalonia.Media.TextWrapping.Wrap,
                     },
                     new StackPanel
@@ -1456,13 +1688,9 @@ public partial class SftpFileBrowserView : UserControl
 
         okBtn.Click     += (_, _) => { confirmed = true;  win.Close(); };
         cancelBtn.Click += (_, _) => { confirmed = false; win.Close(); };
-        win.Opened      += (_, _) => okBtn.Focus();
+        win.Opened      += (_, _) => cancelBtn.Focus();
 
-        if (owner != null)
-            await win.ShowDialog(owner);
-        else
-            win.Show();
-
+        await win.ShowDialog(owner);
         return confirmed;
     }
 
@@ -1579,15 +1807,11 @@ public partial class SftpFileBrowserView : UserControl
         var pt = e.GetCurrentPoint(_filesGrid);
         if (pt.Properties.IsRightButtonPressed)
         {
-            var pos = e.GetPosition(_filesGrid);
-            _contextMenuOnBlankArea = !_filesGrid.GetVisualDescendants()
-                .OfType<DataGridRow>()
-                .Any(r =>
-                {
-                    var origin = r.TranslatePoint(new Point(0, 0), _filesGrid);
-                    return origin != null &&
-                           new Rect(origin.Value, new Size(_filesGrid.Bounds.Width, r.Bounds.Height)).Contains(pos);
-                });
+            // Right-clicking anywhere but the selection must not select the row under the
+            // pointer — that click means "this directory" (see OnFilesGridContextRequested).
+            // The context menu still opens; it is requested on release.
+            if (!IsOnSelection(e.GetPosition(_filesGrid)))
+                e.Handled = true;
             return;
         }
 
@@ -1643,6 +1867,7 @@ public partial class SftpFileBrowserView : UserControl
         _dragOutPending     = null;
         _dragOutPointerArgs = null;
         _dragOutInProgress  = true;
+        _dragOutReleased    = false;
 
         _ = InitiateDragDownloadAsync(entry, pressedArgs ?? throw new InvalidOperationException("Pressed event args missing"));
     }
@@ -1651,7 +1876,11 @@ public partial class SftpFileBrowserView : UserControl
     {
         _dragOutPending     = null;
         _dragOutPointerArgs = null;
-        // _dragOutInProgress is reset by InitiateDragDownloadAsync after completion
+        // _dragOutInProgress is reset by InitiateDragDownloadAsync after completion.
+        // A release while it is still preparing abandons the drag: the press event it
+        // holds would otherwise still report the button as down.
+        if (_dragOutInProgress)
+            _dragOutReleased = true;
 
         // Toggle-off: bare click landed on the already-sole-selected row and the
         // user didn't drag → clear the selection. Skipped while a drag-out is
@@ -1694,12 +1923,18 @@ public partial class SftpFileBrowserView : UserControl
                 if (started) return;
             }
 
+            // Folder drag-out on Windows would pre-download the whole tree while the mouse
+            // is held, with no chance to confirm. Route it through Download to…, which does.
+            if (OperatingSystem.IsWindows() && entry.IsDirectory)
+            {
+                SetStatus("Dragging folders out isn't supported — right-click → Download to… instead.");
+                return;
+            }
+
             SetStatus("Preparing download…");
 
             // Download to a per-entry temp directory so the OS gets a real local file path
-            var sessionTemp = Path.Combine(
-                Path.GetTempPath(), "termthing", "dragout",
-                Guid.NewGuid().ToString("N"));
+            var sessionTemp = Path.Combine(DragOutTempRoot, Guid.NewGuid().ToString("N"));
 
             string localPath;
             try
@@ -1719,9 +1954,9 @@ public partial class SftpFileBrowserView : UserControl
 
             SetStatus(null);
 
-            // Verify the pointer is still pressed before handing off to DoDragDropAsync
-            var pt = pointerArgs.GetCurrentPoint(_filesGrid);
-            if (!pt.Properties.IsLeftButtonPressed)
+            // The button was released while the download was being prepared: a drag
+            // started now would drop immediately, wherever the cursor happens to be.
+            if (_dragOutReleased)
                 return;
 
             var topLevel = TopLevel.GetTopLevel(this);

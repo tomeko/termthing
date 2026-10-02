@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -16,6 +17,7 @@ namespace TermThing.Views;
 /// • RightClick (no modifier)        → paste (with confirmation dialog by default).
 /// • Ctrl+RightClick                 → context menu (Copy / Paste / Clear Scrollback).
 /// • Ctrl+MouseWheel                 → adjust font size, persist to TempSettings.
+/// • Ctrl+Shift+V (Cmd+V on macOS)   → sanitized paste, no confirmation.
 ///
 /// The paste flow consults <see cref="AppSettings.SkipPasteConfirmation"/> (global)
 /// and <see cref="SessionSettings.SkipPasteConfirmation"/> (per-session) and only
@@ -34,7 +36,13 @@ public static class TerminalContextMenuBehavior
     private const double MinFontSize = 6;
     private const double MaxFontSize = 36;
 
+    /// <summary>How clipboard text is rewritten before it reaches the PTY. See <see cref="PasteSanitizer"/>.</summary>
+    private const PasteSanitizationMode PasteSanitization = PasteSanitizationMode.AsciiPunctuation;
+
     private static readonly Dictionary<TerminalControl, AttachContext> _contexts = new();
+
+    // Kept apart from _contexts, which is dropped when a terminal leaves the tree (float/dock).
+    private static readonly ConditionalWeakTable<TerminalControl, Func<string, bool>> _pasteHandlers = new();
 
     private sealed class AttachContext
     {
@@ -62,6 +70,39 @@ public static class TerminalContextMenuBehavior
         // giving us the chance to handle (and optionally suppress) events first.
         tc.AddHandler(InputElement.PointerPressedEvent,      OnPointerPressed, RoutingStrategies.Tunnel);
         tc.AddHandler(InputElement.PointerWheelChangedEvent, OnPointerWheel,   RoutingStrategies.Tunnel);
+        tc.AddHandler(InputElement.KeyDownEvent,             OnKeyDown,        RoutingStrategies.Tunnel);
+    }
+
+    /// <summary>
+    /// Hands pastes into <paramref name="tc"/> (already sanitized and confirmed) to
+    /// <paramref name="handler"/> instead of the emulator, e.g. a tmux pane, where tmux
+    /// knows better whether to bracket them. The handler returns false to decline, and
+    /// the emulator pastes as usual. Null removes it.
+    /// </summary>
+    public static void SetPasteHandler(TerminalControl tc, Func<string, bool>? handler)
+    {
+        if (handler is null) _pasteHandlers.Remove(tc);
+        else _pasteHandlers.AddOrUpdate(tc, handler);
+    }
+
+    // -----------------------------------------------------------------------
+    // Keyboard paste — claimed here so it is sanitized like every other paste
+    // -----------------------------------------------------------------------
+
+    private static async void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender is not TerminalControl tc || e.Key != Key.V) return;
+
+        bool isPasteChord = e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift)
+                            || (OperatingSystem.IsMacOS() && e.KeyModifiers == KeyModifiers.Meta);
+        if (!isPasteChord) return;
+
+        // The terminal library would paste the raw clipboard for these chords.
+        e.Handled = true;
+
+        var text = await ReadSanitizedClipboardAsync(tc);
+        if (!string.IsNullOrEmpty(text))
+            await SendPasteAsync(tc, text, execute: false);
     }
 
     // -----------------------------------------------------------------------
@@ -75,7 +116,7 @@ public static class TerminalContextMenuBehavior
         var props = e.GetCurrentPoint(tc).Properties;
         if (!props.IsRightButtonPressed) return;
 
-        // Always claim the event — we replace the submodule's default behaviour.
+        // Always claim the event — we replace the terminal library's default behaviour.
         e.Handled = true;
 
         var view  = GetTerminalView(tc);
@@ -136,7 +177,7 @@ public static class TerminalContextMenuBehavior
     {
         var copied = await view.CopyAsync();
         if (!copied) return;
-        view.ClearSelection();
+        tc.Terminal.Selection.ClearSelection();
         Toast.Show(tc, "Copied");
     }
 
@@ -147,20 +188,13 @@ public static class TerminalContextMenuBehavior
     private static async Task RequestPasteAsync(TerminalControl tc, TerminalView view)
     {
         var top = TopLevel.GetTopLevel(tc);
-        var clipboard = top?.Clipboard;
-        if (clipboard == null) return;
 
-        var transfer = await clipboard.TryGetDataAsync();
-        if (transfer == null) return;
-        var rawText = await transfer.TryGetTextAsync();
-        if (string.IsNullOrEmpty(rawText)) return;
-
-        // Confirm against what will actually be sent, not what is on the clipboard.
-        // PasteAsync sanitizes on its way to the PTY, so previewing the raw text would
-        // show the user something different from what runs — and the newline guard
-        // below would miss a Unicode line separator that sanitizing turns into a real
-        // newline.
-        var text = PasteSanitizer.Sanitize(rawText, view.PasteSanitization);
+        // Confirm against what will actually be sent, not what is on the clipboard —
+        // and send exactly that text, rather than re-reading a clipboard that may have
+        // changed while the dialog was open. Previewing the raw text would also let the
+        // newline guard below miss a Unicode line separator that sanitizing turns into
+        // a real newline.
+        var text = await ReadSanitizedClipboardAsync(tc);
         if (string.IsNullOrEmpty(text)) return;
 
         _contexts.TryGetValue(tc, out var ctx);
@@ -202,7 +236,7 @@ public static class TerminalContextMenuBehavior
             // it so the user doesn't see two dialogs back-to-back for one paste.
             // Ensure a trailing Enter so the final line actually runs — this is the
             // "Paste and execute" action, so it must execute.
-            await view.PasteAsync(ensureTrailingNewline: true);
+            await SendPasteAsync(tc, text, execute: true);
             return;
         }
 
@@ -214,14 +248,14 @@ public static class TerminalContextMenuBehavior
 
         if (skipGlobal || skipSession)
         {
-            await view.PasteAsync();
+            await SendPasteAsync(tc, text, execute: false);
             return;
         }
 
         if (owner == null)
         {
             // No window host → fall through to direct paste rather than silently dropping.
-            await view.PasteAsync();
+            await SendPasteAsync(tc, text, execute: false);
             return;
         }
 
@@ -244,7 +278,47 @@ public static class TerminalContextMenuBehavior
             ctx.SaveConfig();
         }
 
-        await view.PasteAsync();
+        await SendPasteAsync(tc, text, execute: false);
+    }
+
+    private static async Task<string?> ReadSanitizedClipboardAsync(TerminalControl tc)
+    {
+        var clipboard = TopLevel.GetTopLevel(tc)?.Clipboard;
+        if (clipboard == null) return null;
+
+        var transfer = await clipboard.TryGetDataAsync();
+        if (transfer == null) return null;
+        var rawText = await transfer.TryGetTextAsync();
+
+        return PasteSanitizer.Sanitize(rawText, PasteSanitization);
+    }
+
+    /// <summary>
+    /// Sends already-sanitized text through the emulator's paste entry point, which
+    /// applies bracketed paste (mode 2004) or paste announcement (mode 5522) as the
+    /// application asked for.
+    /// </summary>
+    private static async Task SendPasteAsync(TerminalControl tc, string text, bool execute)
+    {
+        var terminal = tc.Terminal;
+
+        // For the "execute" case the executing Enter is sent separately, after the
+        // bracketed-paste terminator; a newline inside the bracket is literal.
+        if (execute)
+            text = text.TrimEnd('\n');
+
+        if (_pasteHandlers.TryGetValue(tc, out var handler) && handler(text))
+        {
+            if (execute) await tc.SendInputAsync("\r");
+            return;
+        }
+
+        terminal.Paste(text);
+
+        // An announced paste (5522) is fetched by the application later, so an Enter
+        // sent now would run the line before the paste lands. Leave it unexecuted.
+        if (execute && !terminal.PasteNotificationMode)
+            await tc.SendInputAsync("\r");
     }
 
     private static TerminalView? GetTerminalView(TerminalControl tc)
@@ -261,12 +335,11 @@ public static class TerminalContextMenuBehavior
         if (sender is not TerminalControl tc) return;
         if (!e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
 
-        var view = GetTerminalView(tc);
-        if (view == null) return;
-
+        // On the control, not its TerminalView: the view follows it through its template,
+        // and owners can watch it (tmux control mode keeps a tab's panes at one size).
         var delta   = e.Delta.Y > 0 ? 1.0 : -1.0;
-        var newSize = Math.Clamp(view.FontSize + delta, MinFontSize, MaxFontSize);
-        view.FontSize = newSize;
+        var newSize = Math.Clamp(tc.FontSize + delta, MinFontSize, MaxFontSize);
+        tc.FontSize = newSize;
 
         SettingsService.Temp.TerminalFontSize = newSize;
         SettingsService.SaveTemp();

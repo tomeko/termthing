@@ -73,6 +73,18 @@ public sealed class AppSettings
     public bool HideImportedSshConfig { get; set; } = false;
 
     /// <summary>
+    /// When <c>true</c>, the SFTP browser's Modified column shows 12-hour time with
+    /// AM/PM instead of 24-hour time.
+    /// </summary>
+    public bool SftpUse12HourTime { get; set; } = false;
+
+    /// <summary>
+    /// When the legacy tmux actions (tmux attached by typing commands into the tab's
+    /// shell) are offered. Control mode, on tmux 3.2 and later, is the main way.
+    /// </summary>
+    public TmuxLegacyMode TmuxLegacyMode { get; set; } = TmuxLegacyMode.WhenNeeded;
+
+    /// <summary>
     /// One-shot migration: converts old <see cref="FileAssociations"/> entries into
     /// <see cref="Applications"/> entries and clears the source list.
     /// </summary>
@@ -96,4 +108,24 @@ public sealed class AppSettings
         }
         FileAssociations.Clear();
     }
+}
+
+/// <summary>When the legacy tmux actions (typed into the shell) are offered. See <see cref="AppSettings.TmuxLegacyMode"/>.</summary>
+public enum TmuxLegacyMode
+{
+    /// <summary>
+    /// Never: no legacy items in the TMUX menu, and TermThing never types tmux commands
+    /// into a shell (no auto-attach on old hosts, no reattach after a reconnect).
+    /// </summary>
+    Never,
+
+    /// <summary>
+    /// Only where control mode isn't available (tmux older than 3.2): the legacy items
+    /// are the TMUX menu there, and auto-attach types the attach. A shell that was in
+    /// tmux when the connection dropped is reattached on reconnect.
+    /// </summary>
+    WhenNeeded,
+
+    /// <summary>As <see cref="WhenNeeded"/>, plus a Legacy submenu on hosts with control mode.</summary>
+    Always,
 }

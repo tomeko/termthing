@@ -57,6 +57,16 @@
                        HorizontalAlignment="Center"
                        IsVisible="False"/>
 
+            <!-- Optional note on what Reconnect will do (e.g. reattach tmux) -->
+            <TextBlock x:Name="HintText"
+                       Text=""
+                       FontSize="11"
+                       Foreground="#8fc1ff"
+                       TextWrapping="Wrap"
+                       MaxWidth="340"
+                       HorizontalAlignment="Center"
+                       IsVisible="False"/>
+
             <!-- Buttons -->
             <StackPanel Orientation="Horizontal"
                         HorizontalAlignment="Center"

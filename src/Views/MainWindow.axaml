@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:views="clr-namespace:TermThing.Views"
+        xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
         x:Class="TermThing.Views.MainWindow"
         Title="TermThing"
         RequestedThemeVariant="Dark"
@@ -26,7 +27,7 @@
         <!-- Top toolbar -->
         <Grid DockPanel.Dock="Top"
               Background="#1e1e1e"
-              ColumnDefinitions="Auto,Auto,*"
+              ColumnDefinitions="Auto,Auto,*,Auto"
               Margin="6,4">
 
             <!-- New Session split-button -->
@@ -59,6 +60,9 @@
                     </MenuFlyout>
                 </Button.Flyout>
             </Button>
+
+            <!-- Pane controls for the selected tab: TMUX / SESSION, then zoom, close, splits. -->
+            <views:PaneToolbar x:Name="PaneToolbar" Grid.Column="3"/>
         </Grid>
 
         <!-- Body: left pane | splitter | terminal tabs -->
