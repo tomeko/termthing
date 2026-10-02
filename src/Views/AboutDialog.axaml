@@ -1,0 +1,58 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:TermThing.Views"
+        x:Class="TermThing.Views.AboutDialog"
+        Title="About TermThing"
+        Width="600"
+        Height="560"
+        MinWidth="420"
+        MinHeight="360"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True">
+
+    <Grid Margin="16" RowDefinitions="Auto,Auto,Auto,*,Auto">
+
+        <!-- Name + version -->
+        <StackPanel Grid.Row="0" Spacing="2" Margin="0,0,0,12">
+            <TextBlock x:Name="NameText" FontSize="20" FontWeight="SemiBold"/>
+            <TextBlock Text="Tabbed terminal for local shells, SSH and serial."
+                       Foreground="#999999"/>
+        </StackPanel>
+
+        <!-- Build / environment info (also what "Copy info" puts on the clipboard) -->
+        <Grid Grid.Row="1"
+              x:Name="InfoGrid"
+              ColumnDefinitions="Auto,*"
+              Margin="0,0,0,12"/>
+
+        <TextBlock Grid.Row="2"
+                   x:Name="NotesHeader"
+                   FontWeight="SemiBold"
+                   Margin="0,0,0,6"/>
+
+        <!-- Release notes for the running version, fetched from GitHub -->
+        <Border Grid.Row="3"
+                BorderBrush="#444444"
+                BorderThickness="1"
+                CornerRadius="4"
+                Margin="0,0,0,12">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto">
+                <views:ReleaseNotesView x:Name="ReleaseNotes" Margin="12,10"/>
+            </ScrollViewer>
+        </Border>
+
+        <!-- Buttons -->
+        <Grid Grid.Row="4" ColumnDefinitions="Auto,*,Auto">
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
+                <Button Content="GitHub"       Click="OnRepoClicked"/>
+                <Button Content="All releases" Click="OnReleasesClicked"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="CopyButton" Content="Copy info" Click="OnCopyClicked"/>
+                <Button Content="Close" Click="OnCloseClicked" IsDefault="True" IsCancel="True"/>
+            </StackPanel>
+        </Grid>
+
+    </Grid>
+</Window>

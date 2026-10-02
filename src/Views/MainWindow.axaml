@@ -57,6 +57,7 @@
                         <MenuItem Header="Settings…"           Click="OnSettingsClicked"/>
                         <Separator/>
                         <MenuItem Header="Check for updates…"  Click="OnCheckForUpdatesClicked"/>
+                        <MenuItem Header="About TermThing…"    Click="OnAboutClicked"/>
                     </MenuFlyout>
                 </Button.Flyout>
             </Button>

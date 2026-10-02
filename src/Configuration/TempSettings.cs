@@ -119,4 +119,12 @@ public sealed class TempSettings
     /// The Help → Check for updates… manual trigger always runs regardless.
     /// </summary>
     public string? SkippedUpdateTag { get; set; }
+
+    /// <summary>
+    /// Version (e.g. <c>"0.2.0"</c>) whose release notes the user has been shown, or
+    /// that was installed fresh. When the running version is newer, the "What's new"
+    /// dialog shows the notes for every release in between. <c>null</c> in configs
+    /// from versions before this setting existed, which counts as an upgrade.
+    /// </summary>
+    public string? LastRunVersion { get; set; }
 }

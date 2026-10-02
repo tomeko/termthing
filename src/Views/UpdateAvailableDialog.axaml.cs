@@ -19,10 +19,8 @@ public partial class UpdateAvailableDialog : Window
         _info             = info;
         _shutdownCallback = shutdownCallback;
 
-        HeadlineText.Text  = $"TermThing {info.TagName} is available.";
-        ReleaseNotes.Text  = string.IsNullOrWhiteSpace(info.ReleaseNotesMarkdown)
-            ? "(No release notes provided.)"
-            : info.ReleaseNotesMarkdown;
+        HeadlineText.Text = $"TermThing {info.TagName} is available (you have {VersionHelper.DisplayVersion()}).";
+        ReleaseNotes.SetNotes(info.Notes);
     }
 
     private async void OnInstallClicked(object? sender, RoutedEventArgs e)

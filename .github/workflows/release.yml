@@ -120,7 +120,13 @@ jobs:
           files: out/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # Write the actual release notes ABOVE this block when editing the release
+          # on GitHub. The app shows release notes in its update / "What's new" /
+          # About dialogs and strips everything between these two markers (and the
+          # auto-generated "Full Changelog" line) — the markers must match
+          # ReleaseNote.cs.
           body: |
+            <!-- install-notes:start -->
             ## macOS note
             Binaries are not notarized. After downloading, remove the quarantine flag:
             ```
@@ -128,3 +134,4 @@ jobs:
             ```
             ## Windows note
             SmartScreen may warn on first launch until the binary accumulates download reputation.
+            <!-- install-notes:end -->

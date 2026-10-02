@@ -85,6 +85,7 @@ public partial class MainWindow : Window, ISessionPromptHost
     public MainWindow()
     {
         InitializeComponent();
+        Title = $"TermThing {VersionHelper.DisplayVersion()}";
 
         PaneToolbar.Panes = SelectedPanes;
         PaneToolbar.DetachTmux = () =>
@@ -179,6 +180,9 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         // Schedule the background update check ~10 s after the window opens
         ScheduleAutoUpdateCheck();
+
+        // First launch after an upgrade: show the notes for what changed.
+        ScheduleWhatsNew();
 
         // OpenSSH config: on first launch ask if the user wants to import; on
         // every later launch refresh any already-imported groups from their source
@@ -2391,6 +2395,52 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         ShowUpdateDialog(info, manual: true);
     }
+
+    /// <summary>
+    /// On the first launch after an upgrade, shows the release notes for every version
+    /// since the last one run. Fresh installs, dev builds and downgrades only record
+    /// the version. If GitHub can't be reached, nothing is recorded so the notes are
+    /// tried again next launch.
+    /// </summary>
+    private void ScheduleWhatsNew()
+    {
+        var current = VersionHelper.CurrentVersion();
+        if (current is null) return;
+
+        var temp = SettingsService.Temp;
+        var last = Version.TryParse(temp.LastRunVersion, out var v) ? v : null;
+
+        // A config without LastRunVersion predates this setting — that's an upgrade
+        // from 0.1.x, unless there was no config at all (fresh install).
+        if (SettingsService.IsFreshInstall || (last is not null && last >= current))
+        {
+            if (last != current)
+            {
+                temp.LastRunVersion = VersionHelper.Format(current);
+                SettingsService.SaveTemp();
+            }
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            // Let the window paint and restored sessions start first.
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            var notes = await UpdateService.GetNotesAsync(last, current);
+            if (notes is null) return;
+
+            Dispatcher.UIThread.Post(async () =>
+            {
+                SettingsService.Temp.LastRunVersion = VersionHelper.Format(current);
+                SettingsService.SaveTemp();
+                if (notes.Count > 0)
+                    await new WhatsNewDialog(notes).ShowDialog(this);
+            });
+        });
+    }
+
+    private async void OnAboutClicked(object? sender, RoutedEventArgs e) =>
+        await new AboutDialog().ShowDialog(this);
 
     private void ShowUpdateDialog(UpdateInfo info, bool manual)
     {
