@@ -313,12 +313,11 @@ public static class TerminalContextMenuBehavior
         if (sender is not TerminalControl tc) return;
         if (!e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
 
-        var view = GetTerminalView(tc);
-        if (view == null) return;
-
+        // On the control, not its TerminalView: the view follows it through its template,
+        // and owners can watch it (tmux control mode keeps a tab's panes at one size).
         var delta   = e.Delta.Y > 0 ? 1.0 : -1.0;
-        var newSize = Math.Clamp(view.FontSize + delta, MinFontSize, MaxFontSize);
-        view.FontSize = newSize;
+        var newSize = Math.Clamp(tc.FontSize + delta, MinFontSize, MaxFontSize);
+        tc.FontSize = newSize;
 
         SettingsService.Temp.TerminalFontSize = newSize;
         SettingsService.SaveTemp();

@@ -36,7 +36,9 @@ public sealed class TmuxControlSession : IDisposable
     private static readonly IBrush StripBrush = new SolidColorBrush(Color.Parse("#252526"));
     private static readonly IBrush SelectedTabBrush = new SolidColorBrush(Color.Parse("#094771"));
     private static readonly IBrush HoverTabBrush = new SolidColorBrush(Color.Parse("#2a2d2e"));
+    private static readonly IBrush SizeHintBrush = new SolidColorBrush(Color.Parse("#d7ba7d"));
     private static readonly Size FallbackCell = new(8, 17);
+    private static readonly TimeSpan ReclaimInterval = TimeSpan.FromSeconds(2);
 
     private readonly TmuxControlChannel _channel;
     private readonly Func<TerminalControl> _createTerminal;
@@ -52,10 +54,17 @@ public sealed class TmuxControlSession : IDisposable
     private readonly StackPanel _strip;
     private readonly TextBlock _sessionLabel;
     private readonly Panel _host;
-    private readonly DispatcherTimer _sizeTimer;
+    private readonly DispatcherTimer _sizeTimer, _sizeHintTimer;
     private int? _currentWindowId;
     private (int Cols, int Rows) _sentSize;
     private bool _syncRunning, _syncAgain;
+    private bool _syncingFont;
+    private (FontFamily Family, double Size, FontStyle Style, FontWeight Weight)? _cellFont;
+    private Size _cell;
+
+    // The window on show is sized for another client (-1: no). Read on terminal write threads.
+    private volatile int _contestedWindowId = -1;
+    private long _lastReclaim;
     private bool _remote;   // applying a change that came from tmux: don't echo it back
     private bool _disposed;
 
@@ -71,7 +80,7 @@ public sealed class TmuxControlSession : IDisposable
 
     public TmuxControlSession(SshClient client, string sessionName, Func<TerminalControl> createTerminal)
     {
-        SessionName = sessionName;
+        _sessionName = sessionName;
         _createTerminal = createTerminal;
         _channel = TmuxControlChannel.AttachOrCreate(client, sessionName);
         _channel.Output += OnOutput;
@@ -116,10 +125,27 @@ public sealed class TmuxControlSession : IDisposable
 
         _sizeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
         _sizeTimer.Tick += (_, _) => { _sizeTimer.Stop(); SendClientSize(); };
+        // After a resize, give tmux time to answer with %layout-change before calling the
+        // window "sized by another client".
+        _sizeHintTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+        _sizeHintTimer.Tick += (_, _) => { _sizeHintTimer.Stop(); UpdateSessionLabel(); };
     }
 
     /// <summary>The tmux session shown (follows renames and session switches).</summary>
-    public string SessionName { get; private set; }
+    public string SessionName
+    {
+        get => _sessionName;
+        private set
+        {
+            if (_sessionName == value) return;
+            _sessionName = value;
+            SessionNameChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+    private string _sessionName;
+
+    /// <summary>Raised (UI thread) when <see cref="SessionName"/> changes: a rename, or a switch to another session.</summary>
+    public event EventHandler? SessionNameChanged;
 
     /// <summary>The control to place in the tab.</summary>
     public Control View => _root;
@@ -143,8 +169,17 @@ public sealed class TmuxControlSession : IDisposable
     /// <summary>Raised (UI thread) when a pane is gone; its terminal is already out of the view.</summary>
     public event Action<TerminalControl>? TerminalRemoved;
 
-    /// <summary>Raised once (UI thread) when the control client has ended, with tmux's reason if any.</summary>
+    /// <summary>
+    /// Raised once (UI thread) when the control client has ended, with tmux's reason if any.
+    /// Not raised for <see cref="Dispose"/>.
+    /// </summary>
     public event Action<string?>? Ended;
+
+    /// <summary>
+    /// True when tmux itself ended the client (<c>%exit</c>: detached, session killed, server
+    /// gone); false when the channel failed, e.g. the connection dropped.
+    /// </summary>
+    public bool EndedByTmux => _channel.ExitReceived;
 
     /// <summary>The working folder of the active pane (tmux's <c>#{pane_current_path}</c>), once known.</summary>
     public string? ActiveDirectory { get; private set; }
@@ -197,6 +232,7 @@ public sealed class TmuxControlSession : IDisposable
     private void OnPaneInput(int paneId, byte[] data)
     {
         if (_disposed || _channel.IsClosed || TmuxInput.IsTerminalReply(data)) return;
+        ReclaimSize();
         foreach (var command in TmuxInput.SendKeys(paneId, data))
             _channel.Post(command);
     }
@@ -228,7 +264,7 @@ public sealed class TmuxControlSession : IDisposable
 
             case "session-changed":
                 SessionName = n.RestAfter(1);
-                _sessionLabel.Text = "tmux: " + SessionName;
+                UpdateSessionLabel();
                 RequestSync();
                 break;
 
@@ -297,7 +333,7 @@ public sealed class TmuxControlSession : IDisposable
                 if (session.Success && session.Lines.Count > 0)
                 {
                     SessionName = session.Lines[0];
-                    _sessionLabel.Text = "tmux: " + SessionName;
+                    UpdateSessionLabel();
                 }
                 if (windows.Success) Reconcile(windows.Lines, panes.Success ? panes.Lines : []);
             }
@@ -471,6 +507,7 @@ public sealed class TmuxControlSession : IDisposable
                 if (removed is TerminalControl tc) PaneGone(tc);
             window.View.SetZoomedPane(zoomed);
         });
+        if (window.Id == _currentWindowId) UpdateSessionLabel();
         return true;
     }
 
@@ -502,8 +539,17 @@ public sealed class TmuxControlSession : IDisposable
         finally { _remote = was; }
     }
 
+    /// <summary>Shows another tmux session in this client (<c>%session-changed</c> follows).</summary>
+    public void SwitchSession(string name) => Post("switch-client -t " + TmuxControlProtocol.Quote("=" + name));
+
+    /// <summary>Renames the session shown.</summary>
+    public void RenameSession(string name) => Post("rename-session " + TmuxControlProtocol.Quote(name));
+
+    /// <summary>Kills the session shown. tmux then ends this client (<c>%exit</c>), or moves it to another session.</summary>
+    public void KillSession() => Post("kill-session -t " + TmuxControlProtocol.Quote("=" + SessionName));
+
     /// <summary>A new tmux window after the one on show, in its active pane's folder.</summary>
-    private void NewWindow() =>
+    public void NewWindow() =>
         Post(_currentWindowId is { } w
             ? $"new-window -a -t @{w} -c '#{{pane_current_path}}'"
             : "new-window -c '#{pane_current_path}'");
@@ -546,6 +592,8 @@ public sealed class TmuxControlSession : IDisposable
             w.Tab.Background = on ? SelectedTabBrush : Brushes.Transparent;
         }
         if (hadFocus && ActiveTerminal is { } t) Dispatcher.UIThread.Post(() => t.Focus(), DispatcherPriority.Input);
+        UpdateSessionLabel();
+        _root.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(PaneLayoutView.PanesChangedEvent));
         ActivePaneChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -558,6 +606,12 @@ public sealed class TmuxControlSession : IDisposable
         _closedPanes.TryRemove(paneId, out _);
         var connection = _connections.GetOrAdd(paneId, NewConnection);
         var tc = _createTerminal();
+        // tmux sizes the whole client in cells, so every pane in the tab shares one font size.
+        if (_terminals.Values.FirstOrDefault() is { } sibling) tc.FontSize = sibling.FontSize;
+        tc.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == TemplatedControl.FontSizeProperty) OnPaneFontSizeChanged(tc);
+        };
 
         // The scrollbar column would cost the terminal a column or two, and tmux's pane
         // width must match the terminal's exactly.
@@ -570,7 +624,9 @@ public sealed class TmuxControlSession : IDisposable
         {
             if (connection.IsClosed) return;
             tc.AttachConnection(connection);
-            ScheduleClientSize();   // the first loaded terminal gives the real cell size
+            var cell = CellSize();
+            Debug.WriteLineIf(Math.Abs(cell.Width - tc.CharWidth) > 0.01 || Math.Abs(cell.Height - tc.CharHeight) > 0.01,
+                $"[tmux] measured cell {cell} differs from the terminal's {tc.CharWidth}x{tc.CharHeight}");
         }
         if (tc.IsLoaded) Attach();
         else
@@ -580,6 +636,7 @@ public sealed class TmuxControlSession : IDisposable
         }
 
         _terminals[paneId] = tc;
+        ScheduleClientSize();
         TerminalAdded?.Invoke(tc);
         return tc;
     }
@@ -599,11 +656,37 @@ public sealed class TmuxControlSession : IDisposable
     // Size
     // -----------------------------------------------------------------------
 
+    /// <summary>
+    /// The pixel size of one cell, measured the way the terminal measures it (a "W" in the
+    /// pane font), so it is right before any terminal has loaded and right after a zoom.
+    /// </summary>
     private Size CellSize()
     {
-        foreach (var tc in _terminals.Values)
-            if (tc.CharWidth > 0 && tc.CharHeight > 0) return new Size(tc.CharWidth, tc.CharHeight);
-        return FallbackCell;
+        if (_terminals.Values.FirstOrDefault() is not { } tc) return FallbackCell;
+        var font = (tc.FontFamily, tc.FontSize, tc.FontStyle, tc.FontWeight);
+        if (_cellFont != font)
+        {
+            var text = new FormattedText("W", CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                new Typeface(tc.FontFamily, tc.FontStyle, tc.FontWeight, FontStretch.Normal), tc.FontSize, Brushes.Black);
+            _cell = new Size(text.Width, text.Height);
+            _cellFont = font;
+        }
+        return _cell.Width > 0 && _cell.Height > 0 ? _cell : FallbackCell;
+    }
+
+    /// <summary>Ctrl+wheel zoomed one pane: give every pane in the tab that size, then re-size tmux.</summary>
+    private void OnPaneFontSizeChanged(TerminalControl changed)
+    {
+        if (_syncingFont || _disposed) return;
+        _syncingFont = true;
+        try
+        {
+            foreach (var tc in _terminals.Values)
+                if (!ReferenceEquals(tc, changed)) tc.FontSize = changed.FontSize;
+        }
+        finally { _syncingFont = false; }
+        foreach (var w in _windows.Values) w.View.InvalidateMeasure();
+        ScheduleClientSize();
     }
 
     private void ScheduleClientSize()
@@ -613,19 +696,59 @@ public sealed class TmuxControlSession : IDisposable
         _sizeTimer.Start();
     }
 
-    /// <summary>
-    /// Tells tmux how many cells the tab has room for. Half a cell is kept back, matching
-    /// the slack <see cref="PaneLayoutView"/> leaves for pixel rounding.
-    /// </summary>
+    /// <summary>Tells tmux how many cells the tab has room for (see <see cref="PaneLayoutView.ExternalCellsFor"/>).</summary>
     private void SendClientSize()
     {
-        if (_disposed || _channel.IsClosed || _host.Bounds.Width <= 0 || _host.Bounds.Height <= 0) return;
-        var cell = CellSize();
-        int cols = Math.Max(10, (int)Math.Floor((_host.Bounds.Width - cell.Width / 2) / cell.Width));
-        int rows = Math.Max(4, (int)Math.Floor((_host.Bounds.Height - cell.Height / 2) / cell.Height));
+        if (_disposed || _channel.IsClosed || _terminals.Count == 0
+            || _host.Bounds.Width <= 0 || _host.Bounds.Height <= 0) return;
+        var (cols, rows) = PaneLayoutView.ExternalCellsFor(_host.Bounds.Size, CellSize());
+        cols = Math.Max(10, cols);
+        rows = Math.Max(4, rows);
         if ((cols, rows) == _sentSize) return;
         _sentSize = (cols, rows);
         _channel.Post(string.Create(CultureInfo.InvariantCulture, $"refresh-client -C {cols}x{rows}"));
+        _sizeHintTimer.Stop();
+        _sizeHintTimer.Start();
+    }
+
+    /// <summary>
+    /// Shows the session name, plus a hint when the window on show isn't the size of this
+    /// tab: tmux has sized it for another attached client (<c>window-size</c>).
+    /// </summary>
+    private void UpdateSessionLabel()
+    {
+        _sessionLabel.Text = "tmux: " + SessionName;
+        _sessionLabel.Foreground = Brushes.Gray;
+        ToolTip.SetTip(_sessionLabel, null);
+        _contestedWindowId = -1;
+
+        // While our own resize is in flight, a mismatch is just tmux not having answered yet.
+        if (_sizeHintTimer.IsEnabled || ActivePanes is not { } view || _currentWindowId is not { } id || _sentSize == default) return;
+        var (cols, rows) = (view.Layout.Width, view.Layout.Height);
+        if ((cols, rows) == _sentSize) return;
+        _contestedWindowId = id;
+        _sessionLabel.Text += string.Create(CultureInfo.InvariantCulture, $"  ·  {cols}×{rows}, sized by another client");
+        _sessionLabel.Foreground = SizeHintBrush;
+        ToolTip.SetTip(_sessionLabel,
+            string.Create(CultureInfo.InvariantCulture, $"This tab has room for {_sentSize.Cols}×{_sentSize.Rows}, but tmux has sized the window for another attached client.\n") +
+            "With tmux's default window-size (latest), typing here gives the window back to this tab. " +
+            "With window-size smallest or largest, the window keeps the other client's size.");
+    }
+
+    /// <summary>
+    /// Terminal write thread: the user typed while another client has the window's size.
+    /// Selecting the window makes this the latest client, which is what typing in a normal
+    /// tmux client does (keys sent with <c>send-keys</c> don't count), so with
+    /// <c>window-size latest</c> tmux sizes the window for this tab again.
+    /// </summary>
+    private void ReclaimSize()
+    {
+        int id = _contestedWindowId;
+        if (id < 0) return;
+        long now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _lastReclaim) < (long)ReclaimInterval.TotalMilliseconds) return;
+        Interlocked.Exchange(ref _lastReclaim, now);
+        _channel.Post($"select-window -t @{id}");
     }
 
     public void Dispose()
@@ -633,6 +756,7 @@ public sealed class TmuxControlSession : IDisposable
         if (_disposed) return;
         _disposed = true;
         _sizeTimer.Stop();
+        _sizeHintTimer.Stop();
         try { _channel.Dispose(); } catch { }
         foreach (var c in _connections.Values) c.Close();
         _connections.Clear();

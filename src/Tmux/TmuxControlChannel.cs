@@ -58,6 +58,9 @@ public sealed class TmuxControlChannel : IDisposable
 
     public bool IsClosed => _closedFired != 0;
 
+    /// <summary>True once tmux has sent <c>%exit</c>: the client ended normally, not the channel.</summary>
+    public bool ExitReceived => _exitReason is not null;
+
     /// <summary>Why the channel closed (as passed to <see cref="Closed"/>), once it has.</summary>
     public string? CloseReason { get; private set; }
 

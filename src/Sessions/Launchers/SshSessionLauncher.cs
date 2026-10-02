@@ -37,17 +37,23 @@ public sealed class SshSessionLauncher : ISessionLauncher
         SessionDefinition definition,
         ISessionPromptHost promptHost,
         CancellationToken cancellationToken = default) =>
-        LaunchAsync(definition, promptHost, tmuxControlSession: null, cancellationToken);
+        LaunchAsync(definition, promptHost, tmuxControlSession: null, fallbackToShell: true, cancellationToken);
 
     /// <summary>
     /// Connects like <see cref="LaunchAsync(SessionDefinition, ISessionPromptHost, CancellationToken)"/>.
     /// With <paramref name="tmuxControlSession"/>, the tab shows that tmux session through
     /// control mode instead of opening a shell (the session is created if it doesn't exist).
+    /// Without one, the session's tmux auto-attach is opened that way when the host's tmux
+    /// supports control mode.
     /// </summary>
+    /// <param name="fallbackToShell">
+    /// When control mode can't start: open a shell and say why (true), or fail the launch (false).
+    /// </param>
     public async Task<ISessionInstance> LaunchAsync(
         SessionDefinition definition,
         ISessionPromptHost promptHost,
         string? tmuxControlSession,
+        bool fallbackToShell,
         CancellationToken cancellationToken = default)
     {
         var settings = definition.Settings as SshSettings
@@ -345,11 +351,27 @@ public sealed class SshSessionLauncher : ISessionLauncher
             ? await sftpConnector(cancellationToken)
             : null;
 
+        // tmux auto-attach: through control mode when the host's tmux is new enough. Older
+        // hosts get the legacy attach typed into the shell (MainWindow.StartTmux).
+        string? tmuxVersion = null;
+        bool probed = false;
+        if (string.IsNullOrEmpty(tmuxControlSession) && !string.IsNullOrWhiteSpace(settings.TmuxAutoAttach))
+        {
+            tmuxVersion = await Task.Run(() => TmuxClient.Probe(client), cancellationToken);
+            probed = true;
+            if (TmuxClient.SupportsControlMode(tmuxVersion))
+                tmuxControlSession = settings.TmuxAutoAttach.Trim();
+        }
+
         if (!string.IsNullOrEmpty(tmuxControlSession))
         {
             var tmuxInstance = new SshSessionInstance(null, definition.Name, client, eagerSftp, sftpConnector, chainResult,
-                _editors, definition, _saveConfig, proxyTransport, tmuxControlSession);
-            await tmuxInstance.StartTmuxControlAsync();
+                _editors, definition, _saveConfig, proxyTransport, tmuxControlSession)
+            {
+                TmuxAutoAttachHandled = true,
+            };
+            if (probed) tmuxInstance.SetTmuxProbe(tmuxVersion);
+            await tmuxInstance.StartTmuxControlAsync(fallbackToShell);
             return tmuxInstance;
         }
 
@@ -364,6 +386,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             var tcs = new TaskCompletionSource<bool>();
             tc.Loaded += (_, _) => tcs.TrySetResult(true);
             var instance = new SshSessionInstance(tc, definition.Name, client, eagerSftp, sftpConnector, chainResult, _editors, definition, _saveConfig, proxyTransport);
+            if (probed) instance.SetTmuxProbe(tmuxVersion);
             // Fire-and-forget by necessity (we have to return the instance before the
             // control is loaded), but observe the task so failures aren't silent —
             // they would otherwise leave a blank terminal that can't accept input.
@@ -389,11 +412,16 @@ public sealed class SshSessionLauncher : ISessionLauncher
         }
 
         var loadedInstance = new SshSessionInstance(tc, definition.Name, client, eagerSftp, sftpConnector, chainResult, _editors, definition, _saveConfig, proxyTransport);
+        if (probed) loadedInstance.SetTmuxProbe(tmuxVersion);
         await CompleteConnectionAsync(tc, client, settings, Task.CompletedTask, loadedInstance);
         return loadedInstance;
     }
 
-    private static async Task CompleteConnectionAsync(
+    /// <summary>
+    /// Opens the shell channel for a tab's first pane once its terminal has loaded, and
+    /// attaches it. Also used when a tab that opened straight into tmux leaves it.
+    /// </summary>
+    internal static async Task CompleteConnectionAsync(
         TerminalControl tc,
         SshClient client,
         SshSettings settings,
@@ -481,8 +509,9 @@ internal sealed record SftpConnection(
 
 internal sealed class SshSessionInstance : ISessionInstance
 {
-    private readonly TerminalControl? _tc;   // the first pane's terminal; null in tmux control mode
+    private TerminalControl? _tc;   // the shell's first pane; null until the tab has a shell
     private readonly Grid _hostPanel;
+    private readonly Panel _contentHost;   // the shell's panes, and the tmux view over them in tmux mode
     private readonly ContentControl _sysmonSlot;
     private readonly ContentControl _dockerMonSlot;
     private readonly GridSplitter _dockerSplitter;
@@ -518,7 +547,7 @@ internal sealed class SshSessionInstance : ISessionInstance
 
     // Split panes: each pane is its own shell channel on _client. Keyed by the pane's
     // terminal; holds the connection (ours to dispose) and a way to type into the shell.
-    private readonly PaneLayoutView? _panes;   // null in tmux control mode
+    private PaneLayoutView? _panes;   // null until the tab has a shell
     private readonly PaneTitles _titles;
     private sealed class PaneShell
     {
@@ -537,11 +566,15 @@ internal sealed class SshSessionInstance : ISessionInstance
     private volatile TmuxOwnClient? _tmuxOwn;
     private string? _pendingTmuxAttach;
 
-    // tmux control mode: the tab shows a tmux session's windows and panes natively
-    // instead of a shell (no shell channel at all).
-    private readonly TmuxControlSession? _tmuxControl;
+    // tmux mode: the tab shows a tmux session's windows and panes natively through
+    // control mode, over the shell (kept running, hidden) if the tab has one. A tab
+    // opened straight into tmux has no shell until it leaves tmux.
+    private TmuxControlSession? _tmuxControl;
+    private bool _tmuxExitExpected;   // the user killed the session: no notice when tmux ends the client
+    private readonly List<string> _pendingNotices = new();
+    private Action<string>? _notice;
 
-    /// <param name="tc">The first pane's terminal; null for tmux control mode.</param>
+    /// <param name="tc">The first pane's terminal; null to open straight into tmux mode.</param>
     /// <param name="tmuxControlSession">With a null <paramref name="tc"/>: the tmux session to show.</param>
     public SshSessionInstance(
         TerminalControl? tc,
@@ -564,7 +597,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         _definition = definition;
         _saveConfig = saveConfig;
         _proxyTransport = proxyTransport;
-        _titles = new PaneTitles(tc is null ? $"{title} · tmux {tmuxControlSession}" : title, () => Terminal);
+        _titles = new PaneTitles(title, () => Terminal);
         _titles.Changed += (_, _) => TitleChanged?.Invoke(this, EventArgs.Empty);
 
         // Wrap the terminal in a Grid so DockerMon and Sysmon rows can be
@@ -587,47 +620,17 @@ internal sealed class SshSessionInstance : ISessionInstance
         _hostPanel.RowDefinitions.Add(_dockerMonRowDef);
         _hostPanel.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
 
-        Control content;
+        _contentHost = new Panel();
         if (tc is not null)
-        {
-            _panes = new PaneLayoutView(tc)
-            {
-                CellSizeProvider = () => new Avalonia.Size(Terminal?.CharWidth ?? 0, Terminal?.CharHeight ?? 0),
-                SplitRequested   = SplitPane,
-                CloseRequested   = pane => ClosePane((TerminalControl)pane),
-            };
-            // SFTP follows the active pane: on a switch, show the folder that pane is in.
-            _panes.ActivePaneChanged += (_, _) =>
-            {
-                _titles.Refresh();
-                if (Terminal?.CurrentDirectory is { Length: > 0 } dir)
-                    _sftpView?.OnTerminalDirectoryChanged(dir);
-            };
-            _paneShells[tc] = new PaneShell();
-            _titles.Watch(tc);
-            WatchDirectory(tc);
-            content = _panes;
-        }
+            InitShell(tc);
         else
-        {
-            var defn = definition ?? throw new ArgumentNullException(nameof(definition));
-            _tmuxControl = new TmuxControlSession(client, tmuxControlSession
-                ?? throw new ArgumentNullException(nameof(tmuxControlSession)),
-                () => TerminalFactory.Create(defn, saveConfig));
-            _tmuxControl.TerminalAdded += _titles.Watch;
-            _tmuxControl.TerminalRemoved += _titles.Forget;
-            _tmuxControl.ActivePaneChanged += (_, _) => _titles.Refresh();
-            _tmuxControl.Ended += OnTmuxControlEnded;
-            // SFTP follows the active pane's folder, which tmux reports itself (no OSC 7 needed).
-            _tmuxControl.ActiveDirectoryChanged += dir => _sftpView?.OnTerminalDirectoryChanged(dir);
-            content = _tmuxControl.View;
-        }
+            CreateTmuxControl(tmuxControlSession ?? throw new ArgumentNullException(nameof(tmuxControlSession)));
 
-        Grid.SetRow(content, 0);
+        Grid.SetRow(_contentHost, 0);
         Grid.SetRow(_dockerSplitter, 1);
         Grid.SetRow(_dockerMonSlot, 2);
         Grid.SetRow(_sysmonSlot, 3);
-        _hostPanel.Children.Add(content);
+        _hostPanel.Children.Add(_contentHost);
         _hostPanel.Children.Add(_dockerSplitter);
         _hostPanel.Children.Add(_dockerMonSlot);
         _hostPanel.Children.Add(_sysmonSlot);
@@ -747,10 +750,80 @@ internal sealed class SshSessionInstance : ISessionInstance
     // -----------------------------------------------------------------------
 
     /// <summary>
-    /// The tmux session this tab's shell was last seen attached to, or null. Kept
-    /// after the connection drops so a reconnect can reattach it.
+    /// Raised (UI thread) when what the tab's TMUX badge shows may have changed: tmux
+    /// mode entered or left, a legacy client appeared or went in the shell, or the probe
+    /// found tmux missing.
+    /// </summary>
+    public event EventHandler? TmuxStateChanged;
+
+    /// <summary>
+    /// Raised (UI thread) when the tab switches between its shell and tmux mode, or gets
+    /// a shell. <see cref="Panes"/>, <see cref="Terminal"/> and <see cref="Terminals"/> change.
+    /// </summary>
+    public event EventHandler? ModeChanged;
+
+    /// <summary>
+    /// Something to tell the user (UI thread), e.g. why tmux mode ended. Notices raised
+    /// before anyone listens are delivered to the first handler.
+    /// </summary>
+    public event Action<string>? Notice
+    {
+        add
+        {
+            _notice += value;
+            foreach (var message in _pendingNotices) value?.Invoke(message);
+            _pendingNotices.Clear();
+        }
+        remove => _notice -= value;
+    }
+
+    private void RaiseNotice(string message)
+    {
+        if (_notice is { } handler) handler(message);
+        else _pendingNotices.Add(message);
+    }
+
+    private void RaiseTmuxStateChanged() =>
+        Dispatcher.UIThread.Post(() => TmuxStateChanged?.Invoke(this, EventArgs.Empty));
+
+    /// <summary>The installed tmux's version line (e.g. "tmux 3.4"), once probed; null when missing or not probed yet.</summary>
+    public string? TmuxVersion => _tmuxVersion;
+
+    /// <summary>What the TMUX badge shows for this tab.</summary>
+    public TmuxBadgeState TmuxBadgeState =>
+        _tmuxControl is not null ? TmuxBadgeState.Control
+        : _tmuxOwn is not null ? TmuxBadgeState.Legacy
+        : _tmuxProbed && _tmuxVersion is null ? TmuxBadgeState.Unavailable
+        : TmuxBadgeState.Off;
+
+    /// <summary>True while the tab shows a tmux session through control mode.</summary>
+    public bool IsTmuxMode => _tmuxControl is not null;
+
+    /// <summary>
+    /// Set by the launcher when it has dealt with the session's tmux auto-attach itself
+    /// (control mode); the legacy typed attach must not run on top.
+    /// </summary>
+    internal bool TmuxAutoAttachHandled { get; set; }
+
+    /// <summary>Records a probe the launcher has already run, so it isn't run again.</summary>
+    internal void SetTmuxProbe(string? version)
+    {
+        _tmuxProbed = true;
+        _tmuxVersion = version;
+    }
+
+    /// <summary>
+    /// The tmux session this tab's shell was last seen attached to (legacy), or null.
+    /// Kept after the connection drops so a reconnect can reattach it.
     /// </summary>
     public string? TmuxSession => _tmuxOwn?.SessionName;
+
+    private void SetTmuxOwn(TmuxOwnClient? own)
+    {
+        var before = _tmuxOwn?.SessionName;
+        _tmuxOwn = own;
+        if (before != own?.SessionName) RaiseTmuxStateChanged();
+    }
 
     /// <summary>
     /// Background poll: probes for tmux once, then tracks which session (if any) the
@@ -766,11 +839,12 @@ internal sealed class SshSessionInstance : ISessionInstance
             {
                 _tmuxProbed = true;
                 _tmuxVersion = TmuxClient.Probe(_client);
-                if (_tmuxVersion is null) { _tmuxTimer?.Dispose(); return; }
+                if (_tmuxVersion is null) { _tmuxTimer?.Dispose(); RaiseTmuxStateChanged(); return; }
             }
+            else if (_tmuxVersion is null) { _tmuxTimer?.Dispose(); return; }
             var own = TmuxClient.FindOwnClient(_client);
             // Keep the last known session across a poll that ran into the drop itself.
-            if (!_connectionEnded && _client.IsConnected) _tmuxOwn = own;
+            if (!_connectionEnded && _client.IsConnected) SetTmuxOwn(own);
         }
         catch { /* connection going away; the next poll or SessionEnded settles it */ }
         finally { Interlocked.Exchange(ref _tmuxPolling, 0); }
@@ -789,6 +863,7 @@ internal sealed class SshSessionInstance : ISessionInstance
 
     internal async Task<TmuxMenuState> GetTmuxMenuStateAsync()
     {
+        bool inTmux = _tmuxControl is not null;
         var state = await Task.Run(() =>
         {
             if (_connectionEnded || !_client.IsConnected) return new TmuxMenuState(null, [], null);
@@ -796,42 +871,52 @@ internal sealed class SshSessionInstance : ISessionInstance
             {
                 if (!_tmuxProbed) { _tmuxProbed = true; _tmuxVersion = TmuxClient.Probe(_client); }
                 if (_tmuxVersion is null) return new TmuxMenuState(null, [], null);
-                var own = _tmuxOwn = TmuxClient.FindOwnClient(_client);
+                // The shell's own client only matters while the shell is on show.
+                var own = inTmux ? _tmuxOwn : TmuxClient.FindOwnClient(_client);
                 return new TmuxMenuState(_tmuxVersion, TmuxClient.ListSessions(_client), own);
             }
             catch { return new TmuxMenuState(null, [], null); }
         });
+        if (!inTmux && state.Version is not null) SetTmuxOwn(state.Own);
+        if (state.Version is null) RaiseTmuxStateChanged();
         return LastTmuxMenuState = state;
     }
 
+    private const string AmbiguousClients =
+        "Several of this tab's panes run tmux, and there is no telling which is which. " +
+        "Use tmux's own keys (prefix + d to detach) in the pane you mean.";
+
     /// <summary>
-    /// Shows <paramref name="session"/> in this tab. Inside tmux already, the client is
-    /// switched over (no nesting); otherwise the attach command is typed into the shell.
-    /// Returns an error message, or null on success.
+    /// Legacy: shows <paramref name="session"/> in the shell. Inside tmux already, the
+    /// client is switched over (no nesting); otherwise the attach command is typed into
+    /// the shell. Returns an error message, or null on success.
     /// </summary>
     internal async Task<string?> AttachTmuxAsync(string session)
     {
         if (_connectionEnded) return "Session is disconnected.";
-        var own = await Task.Run(() => TmuxClient.FindOwnClient(_client));
-        if (own is not null)
+        var owns = await Task.Run(() => TmuxClient.FindOwnClients(_client));
+        if (owns.Count > 1) return AmbiguousClients;
+        if (owns.Count == 1)
         {
+            var own = owns[0];
             if (own.SessionName == session) return null;
             var err = await Task.Run(() => TmuxClient.SwitchClient(_client, own.ClientTty, session));
-            if (err is null) _tmuxOwn = own with { SessionName = session };
+            if (err is null) SetTmuxOwn(own with { SessionName = session });
             return err;
         }
         if (ShellCommand is not { } send) return "Shell is not ready yet.";
         send(TmuxClient.AttachCommand(session));
-        _tmuxOwn = new TmuxOwnClient(string.Empty, session); // confirmed by the next poll
+        SetTmuxOwn(new TmuxOwnClient(string.Empty, session)); // confirmed by the next poll
         return null;
     }
 
-    /// <summary>Starts a new session (named, or tmux's choice) and shows it in this tab.</summary>
+    /// <summary>Legacy: starts a new session (named, or tmux's choice) and shows it in the shell.</summary>
     internal async Task<string?> NewTmuxSessionAsync(string? name)
     {
         if (_connectionEnded) return "Session is disconnected.";
-        var own = await Task.Run(() => TmuxClient.FindOwnClient(_client));
-        if (own is null)
+        var owns = await Task.Run(() => TmuxClient.FindOwnClients(_client));
+        if (owns.Count > 1) return AmbiguousClients;
+        if (owns.Count == 0)
         {
             if (ShellCommand is not { } send) return "Shell is not ready yet.";
             send(TmuxClient.NewSessionCommand(name));
@@ -843,43 +928,54 @@ internal sealed class SshSessionInstance : ISessionInstance
         return created is null ? error : await AttachTmuxAsync(created);
     }
 
-    /// <summary>Detaches this tab's tmux client, returning to the shell underneath.</summary>
+    /// <summary>Legacy: detaches the shell's tmux client, returning to the shell underneath.</summary>
     internal async Task<string?> DetachTmuxAsync()
     {
         if (_connectionEnded) return "Session is disconnected.";
-        var own = await Task.Run(() => TmuxClient.FindOwnClient(_client));
-        if (own is null) return "This tab is not inside tmux.";
-        var err = await Task.Run(() => TmuxClient.DetachClient(_client, own.ClientTty));
-        if (err is null) _tmuxOwn = null;
+        var owns = await Task.Run(() => TmuxClient.FindOwnClients(_client));
+        if (owns.Count == 0) return "This tab's shell is not inside tmux.";
+        if (owns.Count > 1) return AmbiguousClients;
+        var err = await Task.Run(() => TmuxClient.DetachClient(_client, owns[0].ClientTty));
+        if (err is null) SetTmuxOwn(null);
         return err;
     }
 
     /// <summary>
-    /// Reattaches <paramref name="session"/> once the fresh shell is idle at its prompt.
-    /// Used after a reconnect. Skipped for sessions with deferred initialization, whose
-    /// first prompt may be a password prompt that must not receive typed input.
+    /// Legacy: reattaches <paramref name="session"/> once the fresh shell is idle at its
+    /// prompt. Used after a reconnect, and for auto-attach on hosts whose tmux is too old
+    /// for control mode. Skipped for sessions with deferred initialization, whose first
+    /// prompt may be a password prompt that must not receive typed input.
     /// </summary>
     internal void AttachTmuxWhenReady(string session)
     {
         if (_definition?.Settings is SshSettings { DeferInitialization: true }) return;
-        _tmuxOwn = new TmuxOwnClient(string.Empty, session);
+        SetTmuxOwn(new TmuxOwnClient(string.Empty, session));
         if (_readyForShellIntegration && _connection is not null)
             _connection.SendWhenIdle(TmuxClient.AttachCommand(session));
         else
             _pendingTmuxAttach = session;
     }
 
-    /// <summary>The tmux session this tab shows through control mode, or null for a shell tab.</summary>
+    /// <summary>The tmux session this tab shows through control mode, or null when it shows its shell.</summary>
     public string? TmuxControlSession => _tmuxControl?.SessionName;
 
     /// <summary>Why the session ended, when there is something to tell (e.g. tmux's exit reason).</summary>
     public string? EndMessage { get; private set; }
 
-    /// <summary>Starts control mode; returns once the session's windows are loaded.</summary>
-    internal async Task StartTmuxControlAsync()
+    /// <summary>
+    /// Launch path for a tab opened straight into tmux: starts control mode and returns
+    /// once the session's windows are loaded. On failure, with
+    /// <paramref name="fallbackToShell"/> the tab starts a shell instead and says why;
+    /// otherwise the session is torn down and the error thrown.
+    /// </summary>
+    internal async Task StartTmuxControlAsync(bool fallbackToShell)
     {
-        if (_tmuxControl is null) return;
-        try { await _tmuxControl.StartAsync(); }
+        if (_tmuxControl is not { } control) return;
+        try { await control.StartAsync(); }
+        catch (Exception ex) when (fallbackToShell && _client.IsConnected)
+        {
+            LeaveTmux(control, $"tmux: couldn't open session '{control.SessionName}' ({ex.Message}). Showing a shell instead.");
+        }
         catch
         {
             Kill();
@@ -888,14 +984,192 @@ internal sealed class SshSessionInstance : ISessionInstance
     }
 
     /// <summary>
-    /// The control client ended. A dropped connection is a disconnect like any other.
-    /// Otherwise tmux said why (detached, session killed, server exited): show that.
+    /// Shows <paramref name="session"/> in this tab through control mode, on this tab's
+    /// connection; the shell keeps running underneath and comes back on detach. Already
+    /// in tmux, switches to that session. Returns an error message, or null on success.
     /// </summary>
-    private void OnTmuxControlEnded(string? reason)
+    internal async Task<string?> EnterTmuxAsync(string session)
     {
-        if (_client.IsConnected && !string.IsNullOrEmpty(reason))
-            EndMessage = "tmux: " + reason;
-        FireSessionEnded();
+        if (_connectionEnded || !_client.IsConnected) return "Session is disconnected.";
+        if (_tmuxControl is { } current)
+        {
+            if (current.SessionName != session) current.SwitchSession(session);
+            return null;
+        }
+
+        var control = CreateTmuxControl(session);
+        ModeChanged?.Invoke(this, EventArgs.Empty);
+        RaiseTmuxStateChanged();
+        try
+        {
+            await control.StartAsync();
+            // The windows are loaded now: the panes to split and the terminal to focus exist.
+            if (ReferenceEquals(_tmuxControl, control)) ModeChanged?.Invoke(this, EventArgs.Empty);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            if (ReferenceEquals(_tmuxControl, control))
+            {
+                DropTmuxControl(control);
+                ModeChanged?.Invoke(this, EventArgs.Empty);
+                RaiseTmuxStateChanged();
+            }
+            return ex.Message;
+        }
+    }
+
+    /// <summary>Leaves tmux mode: this client detaches, and the tab shows its shell again.</summary>
+    internal void DetachTmux()
+    {
+        if (_tmuxControl is { } control) LeaveTmux(control, null);
+    }
+
+    /// <summary>Shows another tmux session in this tab (tmux mode).</summary>
+    internal void SwitchTmuxSession(string name) => _tmuxControl?.SwitchSession(name);
+
+    /// <summary>Renames the tmux session shown (tmux mode).</summary>
+    internal void RenameTmuxSession(string name) => _tmuxControl?.RenameSession(name);
+
+    /// <summary>Opens a new window in the tmux session shown (tmux mode).</summary>
+    internal void NewTmuxWindow() => _tmuxControl?.NewWindow();
+
+    /// <summary>Kills the tmux session shown; the tab goes back to its shell without a notice.</summary>
+    internal void KillTmuxSession()
+    {
+        if (_tmuxControl is not { } control) return;
+        _tmuxExitExpected = true;
+        control.KillSession();
+    }
+
+    /// <summary>Builds the control-mode view for <paramref name="session"/> and lays it over the shell.</summary>
+    private TmuxControlSession CreateTmuxControl(string session)
+    {
+        var definition = _definition ?? throw new InvalidOperationException("tmux mode needs the session definition.");
+        var control = new TmuxControlSession(_client, session, () => TerminalFactory.Create(definition, _saveConfig));
+        control.TerminalAdded += _titles.Watch;
+        control.TerminalRemoved += _titles.Forget;
+        control.ActivePaneChanged += (_, _) =>
+        {
+            if (ReferenceEquals(_tmuxControl, control)) _titles.Refresh();
+        };
+        control.Ended += reason => OnTmuxControlEnded(control, reason);
+        control.SessionNameChanged += (_, _) =>
+        {
+            if (ReferenceEquals(_tmuxControl, control)) RaiseTmuxStateChanged();
+        };
+        // SFTP follows the active pane's folder, which tmux reports itself (no OSC 7 needed).
+        control.ActiveDirectoryChanged += dir =>
+        {
+            if (ReferenceEquals(_tmuxControl, control)) _sftpView?.OnTerminalDirectoryChanged(dir);
+        };
+        _tmuxControl = control;
+        _contentHost.Children.Add(control.View);
+        SetShellShown(false);
+        _titles.Refresh();
+        return control;
+    }
+
+    /// <summary>
+    /// The control client ended. A failed channel is a dropped connection like any other
+    /// (the overlay, and Reconnect brings tmux back). When tmux ended it (detached from
+    /// elsewhere, session killed, server gone), the tab goes back to its shell and says why.
+    /// </summary>
+    private void OnTmuxControlEnded(TmuxControlSession control, string? reason)
+    {
+        if (!ReferenceEquals(_tmuxControl, control)) return;
+        if (!control.EndedByTmux || !_client.IsConnected)
+        {
+            if (_client.IsConnected && !string.IsNullOrEmpty(reason)) EndMessage = "tmux: " + reason;
+            FireSessionEnded();
+            return;
+        }
+        bool expected = _tmuxExitExpected;
+        _tmuxExitExpected = false;
+        LeaveTmux(control, expected ? null : $"tmux: {reason ?? "the control client ended"}. Back to the shell.");
+    }
+
+    /// <summary>Back from tmux mode to the shell, starting one if the tab never had it.</summary>
+    private void LeaveTmux(TmuxControlSession control, string? notice)
+    {
+        if (!ReferenceEquals(_tmuxControl, control)) return;
+        DropTmuxControl(control);
+        if (notice is not null) RaiseNotice(notice);
+        if (_panes is null) _ = StartShellAsync();
+        ModeChanged?.Invoke(this, EventArgs.Empty);
+        RaiseTmuxStateChanged();
+    }
+
+    /// <summary>Ends the control client (tmux detaches it) and takes its view out of the tab.</summary>
+    private void DropTmuxControl(TmuxControlSession control)
+    {
+        if (!ReferenceEquals(_tmuxControl, control)) return;
+        _tmuxControl = null;
+        foreach (var tc in control.Terminals) _titles.Forget(tc);
+        control.Dispose();
+        _contentHost.Children.Remove(control.View);
+        SetShellShown(true);
+        _titles.Refresh();
+        if (Terminal?.CurrentDirectory is { Length: > 0 } dir) _sftpView?.OnTerminalDirectoryChanged(dir);
+    }
+
+    /// <summary>
+    /// Shows or hides the shell's panes. Hidden with opacity, not IsVisible: they stay in
+    /// the tree and laid out, so the shells keep being read. Disabled while hidden, so they
+    /// lose keyboard focus and no key reaches a shell nobody can see.
+    /// </summary>
+    private void SetShellShown(bool shown)
+    {
+        if (_panes is null) return;
+        _panes.Opacity = shown ? 1 : 0;
+        _panes.IsHitTestVisible = shown;
+        _panes.IsEnabled = shown;
+    }
+
+    /// <summary>Gives the tab its shell (first pane) on this connection: the panes, then the channel.</summary>
+    private void InitShell(TerminalControl tc)
+    {
+        _tc = tc;
+        _panes = new PaneLayoutView(tc)
+        {
+            CellSizeProvider = () => new Avalonia.Size(Terminal?.CharWidth ?? 0, Terminal?.CharHeight ?? 0),
+            SplitRequested   = SplitPane,
+            CloseRequested   = pane => ClosePane((TerminalControl)pane),
+        };
+        // SFTP follows the active pane: on a switch, show the folder that pane is in.
+        _panes.ActivePaneChanged += (_, _) =>
+        {
+            _titles.Refresh();
+            if (Terminal?.CurrentDirectory is { Length: > 0 } dir)
+                _sftpView?.OnTerminalDirectoryChanged(dir);
+        };
+        _paneShells[tc] = new PaneShell();
+        _titles.Watch(tc);
+        WatchDirectory(tc);
+        _contentHost.Children.Insert(0, _panes);   // under the tmux view, if any
+        SetShellShown(_tmuxControl is null);
+    }
+
+    /// <summary>A tab that opened straight into tmux has left it: start its shell now.</summary>
+    private async Task StartShellAsync()
+    {
+        if (_connectionEnded || _definition?.Settings is not SshSettings settings) return;
+        var tc = TerminalFactory.Create(_definition, _saveConfig);
+        tc.Process = string.Empty;
+        InitShell(tc);
+
+        var loaded = new TaskCompletionSource();
+        if (tc.IsLoaded) loaded.TrySetResult();
+        else tc.Loaded += (_, _) => loaded.TrySetResult();
+        try
+        {
+            await SshSessionLauncher.CompleteConnectionAsync(tc, _client, settings, loaded.Task, this);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[SSH] shell after tmux failed: {ex.Message}");
+            FireSessionEnded();
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -971,18 +1245,18 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     internal void OnPtyConnectionReady(SshPtyConnection connection)
     {
-        if (_tc is null) return;
+        if (_tc is not { } tc) return;
         _connection = connection;
-        _paneShells[_tc].Connection = connection;
+        _paneShells[tc].Connection = connection;
 
         // Both ConnectionClosed (SSH.NET detected the drop) and ProcessExited
         // (TerminalView EOF fallback) route here so the overlay always appears.
-        connection.ConnectionClosed += (_, _) => OnPaneEnded(_tc, connection);
+        connection.ConnectionClosed += (_, _) => OnPaneEnded(tc, connection);
 
         // Fallback: TerminalView raises ProcessExited when ReadAsync returns 0
         // (EOF on the shell stream). This fires even if ConnectionClosed was missed,
         // e.g. if the shell closed cleanly but ErrorOccurred was never raised.
-        _tc.ProcessExited += (_, _) => OnPaneEnded(_tc, connection);
+        tc.ProcessExited += (_, _) => OnPaneEnded(tc, connection);
     }
 
     /// <summary>
@@ -1124,10 +1398,14 @@ internal sealed class SshSessionInstance : ISessionInstance
     }
 
     public Control TabContent => _hostPanel;
-    public TerminalControl? Terminal => _tmuxControl?.ActiveTerminal ?? _panes?.ActivePane as TerminalControl;
+    public TerminalControl? Terminal =>
+        _tmuxControl is { } tmux ? tmux.ActiveTerminal : _panes?.ActivePane as TerminalControl;
+
+    /// <summary>The shell's panes and, in tmux mode, tmux's: all of them move when the tab does.</summary>
     public IReadOnlyList<TerminalControl> Terminals =>
-        _tmuxControl?.Terminals ?? [.. _panes!.Panes.OfType<TerminalControl>()];
-    public PaneLayoutView? Panes => _tmuxControl is null ? _panes : _tmuxControl.ActivePanes;
+        [.. _panes?.Panes.OfType<TerminalControl>() ?? [], .. _tmuxControl?.Terminals ?? []];
+
+    public PaneLayoutView? Panes => _tmuxControl is { } tmux ? tmux.ActivePanes : _panes;
     public Control? SftpPanel => _sftpView;
     public string Title => _titles.Current;
     public event EventHandler? TitleChanged;

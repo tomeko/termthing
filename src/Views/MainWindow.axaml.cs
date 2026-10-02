@@ -60,8 +60,12 @@ public partial class MainWindow : Window, ISessionPromptHost
         public Guid? SftpEditorSessionId { get; set; }
         /// <summary>tmux session the tab's shell was in when it disconnected; reattached on reconnect.</summary>
         public string? TmuxSession { get; set; }
-        /// <summary>tmux session the tab shows through control mode (null for a shell tab); reconnect reattaches it.</summary>
+        /// <summary>tmux session the tab shows through control mode (null while it shows its shell); reconnect reattaches it.</summary>
         public string? TmuxControlSession { get; set; }
+        /// <summary>The TMUX badge on the tab header (SSH tabs only).</summary>
+        public TmuxBadge? Badge { get; set; }
+        /// <summary>The TMUX badge on the floating window's toolbar, while the tab floats.</summary>
+        public TmuxBadge? FloatingBadge { get; set; }
     }
 
     // Tab drag-and-drop state
@@ -81,6 +85,17 @@ public partial class MainWindow : Window, ISessionPromptHost
     public MainWindow()
     {
         InitializeComponent();
+
+        PaneToolbar.Panes = SelectedPanes;
+        PaneToolbar.DetachTmux = () =>
+        {
+            if (TerminalTabs.SelectedItem is TabItem tab && _tabStates.TryGetValue(tab, out var state)
+                && state.Instance is SshSessionInstance ssh)
+                ssh.DetachTmux();
+        };
+        PaneToolbar.ShowMessage = message => Toast.Show(this, message);
+        // Splits, closes and zooms anywhere in the tabs (and tmux window switches).
+        TerminalTabs.AddHandler(PaneLayoutView.PanesChangedEvent, (_, _) => UpdateSplitButtons());
 
         _registry.Register(new LocalSessionLauncher(SaveConfig));
         _registry.Register(new SshSessionLauncher(_knownHosts, () => _config, _editors, SaveConfig));
@@ -921,9 +936,11 @@ public partial class MainWindow : Window, ISessionPromptHost
         var connectingTab = AddConnectingTab(def.Name);
         try
         {
-            var instance = await LaunchSessionAsync(def, tmuxControlSession);
+            // An explicitly picked tmux session fails the launch if it can't be shown; the
+            // session's own auto-attach falls back to a shell instead.
+            var instance = await LaunchSessionAsync(def, tmuxControlSession, fallbackToShell: tmuxControlSession is null);
             TerminalTabs.Items.Remove(connectingTab);
-            AddTab(instance, def, instance.Title, tmuxControlSession);
+            AddTab(instance, def, instance.Title);
 
             // Track in recent sessions if this is a saved session
             if (FindSessionById(def.Id, _config.RootGroup) != null)
@@ -962,9 +979,9 @@ public partial class MainWindow : Window, ISessionPromptHost
         }
     }
 
-    private Task<ISessionInstance> LaunchSessionAsync(SessionDefinition def, string? tmuxControlSession) =>
-        tmuxControlSession is not null && _registry.Get(def.Kind) is SshSessionLauncher ssh
-            ? ssh.LaunchAsync(def, this, tmuxControlSession)
+    private Task<ISessionInstance> LaunchSessionAsync(SessionDefinition def, string? tmuxControlSession, bool fallbackToShell) =>
+        _registry.Get(def.Kind) is SshSessionLauncher ssh
+            ? ssh.LaunchAsync(def, this, tmuxControlSession, fallbackToShell)
             : _registry.Get(def.Kind).LaunchAsync(def, this);
 
     /// <summary>
@@ -1003,7 +1020,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         return tab;
     }
 
-    private void AddTab(ISessionInstance instance, SessionDefinition def, string initialTitle, string? tmuxControlSession = null)
+    private void AddTab(ISessionInstance instance, SessionDefinition def, string initialTitle)
     {
         var tabIcon = new MaterialIcon
         {
@@ -1018,21 +1035,13 @@ public partial class MainWindow : Window, ISessionPromptHost
         var titleBlock = new TextBlock
         {
             Text = initialTitle,
+            FontSize = 13,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 6, 0),
+            Margin = new Thickness(0, 0, 8, 0),
         };
 
-        // Tab menu affordances: the right-click menu is not discoverable on its own.
-        var menuButton = new Button
-        {
-            Content = "▾",
-            Padding = new Thickness(2, 0, 2, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Margin = new Thickness(0, 0, 2, 0),
-        };
-        ToolTip.SetTip(menuButton, "Tab menu (split, tmux, …)");
+        // SSH tabs: the TMUX badge shows whether the tab is in tmux, and opens the tmux menu.
+        var badge = def.Settings is SshSettings ? new TmuxBadge { Margin = new Thickness(0, 0, 6, 0) } : null;
 
         var popOutButton = new Button
         {
@@ -1057,8 +1066,11 @@ public partial class MainWindow : Window, ISessionPromptHost
         var headerContent = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Children = { tabIcon, titleBlock, menuButton, popOutButton, closeButton },
+            Children = { tabIcon, titleBlock },
         };
+        if (badge is not null) headerContent.Children.Add(badge);
+        headerContent.Children.Add(popOutButton);
+        headerContent.Children.Add(closeButton);
 
         // Wrap in a Border so we can paint left/right drop indicators via BorderThickness
         var headerBorder = new Border
@@ -1085,7 +1097,8 @@ public partial class MainWindow : Window, ISessionPromptHost
             HeaderBorder = headerBorder,
             Def        = def,
             Instance   = instance,
-            TmuxControlSession = tmuxControlSession,
+            TmuxControlSession = (instance as SshSessionInstance)?.TmuxControlSession,
+            Badge      = badge,
             // Capture the stable editor-session ID so we can close
             // any open editor windows when this tab is closed.
             SftpEditorSessionId = (instance.SftpPanel as SftpFileBrowserView)?.SessionEditorId,
@@ -1094,15 +1107,21 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         WireSessionInstance(state, instance);
         StartTmux(state, instance);
+        UpdateTmuxBadge(state);
         popOutButton.Click += (_, _) => PopOutTab(tab);
         closeButton.Click  += async (_, _) => await CloseTabAsync(tab);
 
-        // --- Tab menu: right-click the header, click the icon, or the ▾ button ---
+        // --- Tab menu: right-click the header, or click the icon. tmux has its own, on the badge ---
         var ctxMenu = new ContextMenu();
         ctxMenu.Opening += (_, _) => PopulateTabMenu(ctxMenu, state);
         headerBorder.ContextMenu = ctxMenu;
-        menuButton.Click += (_, _) => OpenTabMenu(state, menuButton, PlacementMode.BottomEdgeAlignedLeft);
         tabIcon.Tapped   += (_, e) => { e.Handled = true; OpenTabMenu(state, tabIcon, PlacementMode.BottomEdgeAlignedLeft); };
+        if (badge is not null)
+            badge.Clicked += (_, _) =>
+            {
+                TerminalTabs.SelectedItem = tab;
+                OpenTmuxMenu(state, badge);
+            };
 
         // --- Tab drag-and-drop ---
         headerBorder.PointerPressed += (_, e) =>
@@ -1212,6 +1231,29 @@ public partial class MainWindow : Window, ISessionPromptHost
             Dispatcher.UIThread.Post(() => ShowDisconnectOverlay(state, endMessage));
         };
 
+        if (instance is SshSessionInstance sshInstance)
+        {
+            sshInstance.TmuxStateChanged += (_, _) =>
+            {
+                if (!ReferenceEquals(state.Instance, sshInstance)) return;
+                // Follows renames and session switches, for Reconnect.
+                if (sshInstance.TmuxControlSession is { } shown) state.TmuxControlSession = shown;
+                UpdateTmuxBadge(state);
+            };
+            // The tab went into tmux or back to its shell: other panes, other split target.
+            sshInstance.ModeChanged += (_, _) =>
+            {
+                if (!ReferenceEquals(state.Instance, sshInstance)) return;
+                state.TmuxControlSession = sshInstance.TmuxControlSession;
+                UpdateTmuxBadge(state);
+                UpdateSplitButtons();
+                state.FloatingWindow?.RefreshPaneToolbar();
+                if (state.FloatingWindow is not null || ReferenceEquals(TerminalTabs.SelectedItem, state.Tab))
+                    FocusTerminal((Control?)sshInstance.Terminal ?? sshInstance.TabContent);
+            };
+            sshInstance.Notice += message => Toast.Show(OwnerOf(state), message, TimeSpan.FromSeconds(6));
+        }
+
         // SFTP opened/closed after connect (post-connect toggle) — refresh the left
         // pane if this session's tab is the one currently selected, or the floating
         // window's SFTP column if the tab is floating.
@@ -1234,6 +1276,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         var overlay = new SessionEndedOverlay(reason, TmuxReattachHint(state));
         state.Overlay = overlay;
         UpdateSplitButtons();
+        UpdateTmuxBadge(state);
         state.Host.Children.Add(overlay);
         ClearSftpPanelIfNeeded(state.Tab);
         state.FloatingWindow?.SetSftpPanel(null);   // the dead session's browser
@@ -1243,13 +1286,14 @@ public partial class MainWindow : Window, ISessionPromptHost
     }
 
     /// <summary>
-    /// Attaches tmux in a freshly connected SSH tab: the session the tab was in when it
-    /// dropped, else the session's configured auto-attach. One attach only — a second
-    /// one would be typed into tmux itself.
+    /// Legacy tmux in a freshly connected SSH tab: types the attach of the session the
+    /// shell was in when it dropped, else of the configured auto-attach. Not when the
+    /// launcher already opened tmux through control mode (tmux 3.2+). One attach only —
+    /// a second one would be typed into tmux itself.
     /// </summary>
     private static void StartTmux(TabState state, ISessionInstance instance)
     {
-        if (instance is not SshSessionInstance ssh || state.TmuxControlSession is not null) return;
+        if (instance is not SshSessionInstance ssh || ssh.IsTmuxMode || ssh.TmuxAutoAttachHandled) return;
         var session = state.TmuxSession;
         if (string.IsNullOrEmpty(session) && state.Def.Settings is SshSettings ss)
             session = ss.TmuxAutoAttach;
@@ -1266,67 +1310,15 @@ public partial class MainWindow : Window, ISessionPromptHost
     }
 
     /// <summary>
-    /// Fills a tab menu. Rebuilt on every open: the session instance changes on
-    /// reconnect, pane items depend on the pane count, and a floating tab gets
-    /// Dock Back instead of the tab-strip items.
+    /// Fills a tab's right-click menu: things for the whole tab only (SFTP browser, float
+    /// or dock, close). Rebuilt on every open: the session instance changes on reconnect,
+    /// and a floating tab gets Dock Back instead of the tab-strip items.
     /// </summary>
     private void PopulateTabMenu(ContextMenu menu, TabState state)
     {
         menu.Items.Clear();
         var tab = state.Tab;
         bool floating = state.FloatingWindow is not null;
-
-        // Split panes (sessions that support them). Items act on the active pane.
-        if (state.Instance?.Panes is { } panes)
-        {
-            var splitRight = new MenuItem
-            {
-                Header = "Split Right",
-                InputGesture = new KeyGesture(Key.OemPlus, KeyModifiers.Alt | KeyModifiers.Shift),
-                IsEnabled = panes.CanSplitActive(SplitAxis.LeftRight),
-            };
-            var splitDown = new MenuItem
-            {
-                Header = "Split Down",
-                InputGesture = new KeyGesture(Key.OemMinus, KeyModifiers.Alt | KeyModifiers.Shift),
-                IsEnabled = panes.CanSplitActive(SplitAxis.TopBottom),
-            };
-            splitRight.Click += (_, _) => panes.RequestSplit(SplitAxis.LeftRight);
-            splitDown.Click  += (_, _) => panes.RequestSplit(SplitAxis.TopBottom);
-            menu.Items.Add(splitRight);
-            menu.Items.Add(splitDown);
-
-            if (panes.PaneCount > 1)
-            {
-                var zoom = new MenuItem
-                {
-                    Header = panes.IsZoomed ? "Unzoom Pane" : "Zoom Pane",
-                    InputGesture = new KeyGesture(Key.Z, KeyModifiers.Alt | KeyModifiers.Shift),
-                };
-                var closePane = new MenuItem
-                {
-                    Header = "Close Pane",
-                    InputGesture = new KeyGesture(Key.W, KeyModifiers.Control | KeyModifiers.Shift),
-                };
-                zoom.Click      += (_, _) => panes.ToggleZoom();
-                closePane.Click += (_, _) => panes.RequestCloseActive();
-                menu.Items.Add(zoom);
-                menu.Items.Add(closePane);
-            }
-            menu.Items.Add(new Separator());
-        }
-
-        // tmux submenu (SSH tabs only), filled in from the host as the menu opens.
-        if (state.Instance is SshSessionInstance ssh)
-        {
-            var tmuxItem = new MenuItem { Header = "tmux" };
-            if (ssh.TmuxControlSession is { } control)
-                tmuxItem.Items.Add(new MenuItem { Header = $"Control mode: '{control}'", IsEnabled = false });
-            else
-                _ = PopulateTmuxMenuAsync(tmuxItem, ssh, state.Def);
-            menu.Items.Add(tmuxItem);
-            menu.Items.Add(new Separator());
-        }
 
         // SFTP browser toggle — the only way to open it for a floating tab, whose
         // window has no "Open SFTP browser" placeholder of its own.
@@ -1378,120 +1370,244 @@ public partial class MainWindow : Window, ISessionPromptHost
         : state.TmuxSession is { } name ? $"Reconnect will reattach tmux session '{name}'."
         : null;
 
-    /// <summary>
-    /// Fills the tab's tmux submenu. The last known state is shown straight away and
-    /// the host is queried in the background; the items are only rebuilt if the answer
-    /// differs, since replacing them while the submenu is open makes it flash.
-    /// </summary>
-    private async Task PopulateTmuxMenuAsync(MenuItem root, SshSessionInstance ssh, SessionDefinition def)
+    /// <summary>The floating window's copy of a tab's TMUX badge.</summary>
+    private TmuxBadge NewFloatingBadge(TabState state)
     {
-        if (ssh.LastTmuxMenuState is { } cached)
-            BuildTmuxMenu(root, ssh, def, cached);
-        else if (root.Tag is null)
-            root.Items.Add(new MenuItem { Header = "Loading…", IsEnabled = false });
+        var badge = new TmuxBadge();
+        badge.Clicked += (_, _) => OpenTmuxMenu(state, badge);
+        var ssh = state.Instance as SshSessionInstance;
+        badge.SetState(ssh?.TmuxBadgeState ?? TmuxBadgeState.Disconnected, ssh?.TmuxControlSession ?? ssh?.TmuxSession);
+        return badge;
+    }
 
-        BuildTmuxMenu(root, ssh, def, await ssh.GetTmuxMenuStateAsync());
+    /// <summary>The window a tab is shown in: its floating window, or this one.</summary>
+    private Window OwnerOf(TabState state) => (Window?)state.FloatingWindow ?? this;
+
+    /// <summary>Shows the tab's tmux state on its TMUX badge (and its floating window's).</summary>
+    private static void UpdateTmuxBadge(TabState state)
+    {
+        var ssh = state.Instance as SshSessionInstance;
+        var badgeState = ssh?.TmuxBadgeState ?? TmuxBadgeState.Disconnected;
+        var session = ssh?.TmuxControlSession ?? ssh?.TmuxSession;
+        state.Badge?.SetState(badgeState, session);
+        state.FloatingBadge?.SetState(badgeState, session);
     }
 
     /// <summary>
-    /// Builds the submenu: the host's sessions (click to show one in this tab),
-    /// New session…, and Detach when the tab is inside tmux. No-op when the menu
-    /// already shows <paramref name="menu"/>.
+    /// Opens the tab's tmux menu at its badge. The last known host state is shown straight
+    /// away and the host is queried in the background; the items are only rebuilt if the
+    /// answer differs, since replacing them while the menu is open makes it flash.
     /// </summary>
-    private void BuildTmuxMenu(MenuItem root, SshSessionInstance ssh, SessionDefinition def, SshSessionInstance.TmuxMenuState menu)
+    private void OpenTmuxMenu(TabState state, Control anchor)
     {
-        if (Equals(root.Tag, menu.Signature)) return;
-        root.Tag = menu.Signature;
+        var menu = new ContextMenu { Placement = PlacementMode.BottomEdgeAlignedLeft };
+        if (state.Instance is not SshSessionInstance ssh)
+        {
+            menu.Items.Add(Disabled("Disconnected"));
+            menu.Open(anchor);
+            return;
+        }
+        if (ssh.LastTmuxMenuState is { } cached) BuildTmuxMenu(menu, state, ssh, cached);
+        else menu.Items.Add(Disabled("Loading…"));
+        menu.Open(anchor);
+        _ = RefreshTmuxMenuAsync(menu, state, ssh);
+    }
+
+    private async Task RefreshTmuxMenuAsync(ContextMenu menu, TabState state, SshSessionInstance ssh)
+    {
+        var fresh = await ssh.GetTmuxMenuStateAsync();
+        if (menu.IsOpen) BuildTmuxMenu(menu, state, ssh, fresh);
+    }
+
+    /// <summary>
+    /// Builds the tmux menu for what the tab shows: a tmux session (control mode) or its
+    /// shell. No-op when the menu already shows <paramref name="menu"/>.
+    /// </summary>
+    private void BuildTmuxMenu(ContextMenu root, TabState state, SshSessionInstance ssh, SshSessionInstance.TmuxMenuState menu)
+    {
+        var signature = $"{ssh.TmuxControlSession}|{menu.Signature}";
+        if (Equals(root.Tag, signature)) return;
+        root.Tag = signature;
         root.Items.Clear();
 
         if (menu.Version is null)
         {
-            root.Items.Add(new MenuItem { Header = "tmux not found on this host", IsEnabled = false });
+            root.Items.Add(Disabled("tmux not found on this host"));
             return;
         }
 
-        foreach (var session in menu.Sessions)
+        if (ssh.TmuxControlSession is { } shown)
+            BuildTmuxModeItems(root, state, ssh, menu, shown);
+        else if (TmuxClient.SupportsControlMode(menu.Version))
+            BuildShellModeItems(root, state, ssh, menu);
+        else
         {
-            bool current = menu.Own?.SessionName == session.Name;
-            var windows  = session.Windows == 1 ? "1 window" : $"{session.Windows} windows";
-            var detail   = current ? "this tab"
-                         : session.AttachedClients > 0 ? $"{windows}, attached elsewhere"
-                         : windows;
-            var item = new MenuItem
-            {
-                Header    = $"{(current ? "● " : "")}{session.Name}  ({detail})",
-                IsEnabled = !current,
-            };
-            var name = session.Name;
-            item.Click += async (_, _) => await RunTmuxActionAsync(ssh, () => ssh.AttachTmuxAsync(name));
-            root.Items.Add(item);
+            root.Items.Add(Disabled("Control mode needs tmux 3.2 or later"));
+            root.Items.Add(new Separator());
+            BuildLegacyItems(root.Items, state, ssh, menu);
         }
-        if (menu.Sessions.Count == 0)
-            root.Items.Add(new MenuItem { Header = "No sessions", IsEnabled = false });
 
         root.Items.Add(new Separator());
+        root.Items.Add(Disabled(menu.Version));
+    }
+
+    private static MenuItem Disabled(string header) => new() { Header = header, IsEnabled = false };
+
+    private static string SessionDetail(TmuxSessionInfo session)
+    {
+        var windows = session.Windows == 1 ? "1 window" : $"{session.Windows} windows";
+        return session.AttachedClients > 0 ? $"{windows}, attached elsewhere" : windows;
+    }
+
+    /// <summary>A shell tab: sessions to show in this tab or a new one (control mode), and the legacy actions.</summary>
+    private void BuildShellModeItems(ContextMenu root, TabState state, SshSessionInstance ssh, SshSessionInstance.TmuxMenuState menu)
+    {
+        foreach (var session in menu.Sessions)
+        {
+            var name = session.Name;
+            var item = new MenuItem { Header = $"{name}  ({SessionDetail(session)})" };
+            item.Click += async (_, _) => await RunTmuxActionAsync(state, ssh, () => ssh.EnterTmuxAsync(name));
+            root.Items.Add(item);
+        }
+        if (menu.Sessions.Count == 0) root.Items.Add(Disabled("No sessions"));
 
         var newItem = new MenuItem { Header = "New Session…" };
         newItem.Click += async (_, _) =>
         {
-            var dialog = new RenameDialog("") { Title = "New tmux Session" };
-            var name = await dialog.ShowDialog<string?>(this);
-            if (name is null) return;
-            await RunTmuxActionAsync(ssh, () => ssh.NewTmuxSessionAsync(name));
+            if (await AskNewSessionNameAsync(state, menu) is { } name)
+                await RunTmuxActionAsync(state, ssh, () => ssh.EnterTmuxAsync(name));
         };
         root.Items.Add(newItem);
+        root.Items.Add(new Separator());
 
-        // Control mode: the session's windows and panes shown natively, in a new tab.
-        if (TmuxClient.SupportsControlMode(menu.Version))
+        var newTab = new MenuItem { Header = "Open in New Tab" };
+        foreach (var session in menu.Sessions)
         {
-            var controlItem = new MenuItem { Header = "Open in New Tab (control mode)" };
-            foreach (var session in menu.Sessions)
-            {
-                var name = session.Name;
-                var item = new MenuItem { Header = name };
-                item.Click += async (_, _) => await LaunchAndAddTabAsync(def, name);
-                controlItem.Items.Add(item);
-            }
-            if (menu.Sessions.Count > 0) controlItem.Items.Add(new Separator());
-            var newControl = new MenuItem { Header = "New Session…" };
-            newControl.Click += async (_, _) =>
-            {
-                var dialog = new RenameDialog("") { Title = "New tmux Session (control mode)" };
-                var name = await dialog.ShowDialog<string?>(this);
-                if (name is null) return;
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    // Same default naming as tmux: the first free number.
-                    var taken = menu.Sessions.Select(s => s.Name).ToHashSet();
-                    int n = 0;
-                    while (taken.Contains(n.ToString(System.Globalization.CultureInfo.InvariantCulture))) n++;
-                    name = n.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                }
-                await LaunchAndAddTabAsync(def, name.Trim());
-            };
-            controlItem.Items.Add(newControl);
-            root.Items.Add(controlItem);
+            var name = session.Name;
+            var item = new MenuItem { Header = name };
+            item.Click += async (_, _) => await LaunchAndAddTabAsync(state.Def, name);
+            newTab.Items.Add(item);
         }
+        if (menu.Sessions.Count > 0) newTab.Items.Add(new Separator());
+        var newTabSession = new MenuItem { Header = "New Session…" };
+        newTabSession.Click += async (_, _) =>
+        {
+            if (await AskNewSessionNameAsync(state, menu) is { } name)
+                await LaunchAndAddTabAsync(state.Def, name);
+        };
+        newTab.Items.Add(newTabSession);
+        root.Items.Add(newTab);
+
+        var legacy = new MenuItem { Header = "Legacy (typed into the shell)" };
+        BuildLegacyItems(legacy.Items, state, ssh, menu);
+        root.Items.Add(legacy);
+    }
+
+    /// <summary>A tab in tmux mode: the session it shows, and what to do with it.</summary>
+    private void BuildTmuxModeItems(ContextMenu root, TabState state, SshSessionInstance ssh,
+        SshSessionInstance.TmuxMenuState menu, string shown)
+    {
+        root.Items.Add(Disabled($"Session '{shown}'"));
+
+        var others = menu.Sessions.Where(s => s.Name != shown).ToList();
+        var switchItem = new MenuItem { Header = "Switch to Session", IsEnabled = others.Count > 0 };
+        foreach (var session in others)
+        {
+            var name = session.Name;
+            var item = new MenuItem { Header = $"{name}  ({SessionDetail(session)})" };
+            item.Click += (_, _) => { ssh.SwitchTmuxSession(name); FocusSession(ssh); };
+            switchItem.Items.Add(item);
+        }
+        root.Items.Add(switchItem);
+
+        var newWindow = new MenuItem { Header = "New Window" };
+        newWindow.Click += (_, _) => { ssh.NewTmuxWindow(); FocusSession(ssh); };
+        root.Items.Add(newWindow);
+
+        var rename = new MenuItem { Header = "Rename Session…" };
+        rename.Click += async (_, _) =>
+        {
+            var dialog = new RenameDialog(shown) { Title = "Rename tmux Session" };
+            var name = await dialog.ShowDialog<string?>(OwnerOf(state));
+            if (!string.IsNullOrWhiteSpace(name)) ssh.RenameTmuxSession(name.Trim());
+            FocusSession(ssh);
+        };
+        root.Items.Add(rename);
+        root.Items.Add(new Separator());
+
+        var detach = new MenuItem { Header = "Detach (back to the shell)" };
+        detach.Click += (_, _) => ssh.DetachTmux();
+        root.Items.Add(detach);
+
+        var kill = new MenuItem { Header = "Kill Session…" };
+        kill.Click += async (_, _) =>
+        {
+            bool yes = await MessageDialog.ShowConfirmAsync(OwnerOf(state), "Kill tmux Session",
+                $"Kill tmux session '{shown}'? Its windows, and the programs running in them, end for every client.");
+            if (yes) ssh.KillTmuxSession();
+            else FocusSession(ssh);
+        };
+        root.Items.Add(kill);
+    }
+
+    /// <summary>The legacy actions: tmux attached by typing into the tab's shell.</summary>
+    private void BuildLegacyItems(ItemCollection items, TabState state, SshSessionInstance ssh, SshSessionInstance.TmuxMenuState menu)
+    {
+        foreach (var session in menu.Sessions)
+        {
+            bool current = menu.Own?.SessionName == session.Name;
+            var item = new MenuItem
+            {
+                Header    = $"{(current ? "● " : "")}{session.Name}  ({(current ? "this shell" : SessionDetail(session))})",
+                IsEnabled = !current,
+            };
+            var name = session.Name;
+            item.Click += async (_, _) => await RunTmuxActionAsync(state, ssh, () => ssh.AttachTmuxAsync(name));
+            items.Add(item);
+        }
+        if (menu.Sessions.Count == 0) items.Add(Disabled("No sessions"));
+
+        var newItem = new MenuItem { Header = "New Session…" };
+        newItem.Click += async (_, _) =>
+        {
+            var dialog = new RenameDialog("") { Title = "New tmux Session (legacy)" };
+            var name = await dialog.ShowDialog<string?>(OwnerOf(state));
+            if (name is null) return;
+            await RunTmuxActionAsync(state, ssh, () => ssh.NewTmuxSessionAsync(name));
+        };
+        items.Add(newItem);
 
         if (menu.Own is not null)
         {
             var detachItem = new MenuItem { Header = $"Detach from '{menu.Own.SessionName}'" };
-            detachItem.Click += async (_, _) => await RunTmuxActionAsync(ssh, ssh.DetachTmuxAsync);
-            root.Items.Add(detachItem);
+            detachItem.Click += async (_, _) => await RunTmuxActionAsync(state, ssh, ssh.DetachTmuxAsync);
+            items.Add(detachItem);
         }
-
-        root.Items.Add(new Separator());
-        root.Items.Add(new MenuItem { Header = menu.Version, IsEnabled = false });
     }
 
-    private async Task RunTmuxActionAsync(SshSessionInstance ssh, Func<Task<string?>> action)
+    /// <summary>Asks for a new session's name; blank means the first free number, as tmux names them.</summary>
+    private async Task<string?> AskNewSessionNameAsync(TabState state, SshSessionInstance.TmuxMenuState menu)
+    {
+        var dialog = new RenameDialog("") { Title = "New tmux Session" };
+        var name = await dialog.ShowDialog<string?>(OwnerOf(state));
+        if (name is null) return null;
+        if (!string.IsNullOrWhiteSpace(name)) return name.Trim();
+        var taken = menu.Sessions.Select(s => s.Name).ToHashSet();
+        int n = 0;
+        while (taken.Contains(n.ToString(System.Globalization.CultureInfo.InvariantCulture))) n++;
+        return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private async Task RunTmuxActionAsync(TabState state, SshSessionInstance ssh, Func<Task<string?>> action)
     {
         string? error;
         try { error = await action(); }
         catch (Exception ex) { error = ex.Message; }
-        if (error is not null) Toast.Show(this, "tmux: " + error);
-        FocusTerminal((Control?)ssh.Terminal ?? ssh.TabContent);
+        if (error is not null) Toast.Show(OwnerOf(state), "tmux: " + error, TimeSpan.FromSeconds(6));
+        FocusSession(ssh);
     }
+
+    private void FocusSession(SshSessionInstance ssh) => FocusTerminal((Control?)ssh.Terminal ?? ssh.TabContent);
 
     private async Task ReconnectTabAsync(TabState state)
     {
@@ -1521,7 +1637,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         string? errorMessage = null;
         try
         {
-            newInstance = await LaunchSessionAsync(state.Def, state.TmuxControlSession);
+            newInstance = await LaunchSessionAsync(state.Def, state.TmuxControlSession, fallbackToShell: true);
         }
         catch (OperationCanceledException)
         {
@@ -1558,6 +1674,9 @@ public partial class MainWindow : Window, ISessionPromptHost
         state.Host.Children.Add(newInstance.TabContent);
         WireSessionInstance(state, newInstance);
         StartTmux(state, newInstance);
+        state.TmuxControlSession = (newInstance as SshSessionInstance)?.TmuxControlSession;
+        UpdateTmuxBadge(state);
+        state.FloatingWindow?.RefreshPaneToolbar();
         FocusTerminal((Control?)newInstance.Terminal ?? newInstance.TabContent);
 
         // Re-attach the new instance's SFTP panel. ShowDisconnectOverlay replaced
@@ -1826,7 +1945,9 @@ public partial class MainWindow : Window, ISessionPromptHost
             () => DockBackSession(state),
             async () => await CloseTabAsync(state.Tab, skipConfirm: true),
             (anchor, placement) => OpenTabMenu(state, anchor, placement),
-            () => state.Instance?.Panes)
+            () => state.Instance?.Panes,
+            () => (state.Instance as SshSessionInstance)?.DetachTmux(),
+            state.FloatingBadge = state.Badge is null ? null : NewFloatingBadge(state))
         {
             Width = Bounds.Width,
             Height = Bounds.Height,
@@ -1858,6 +1979,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         // Restore the Tab's content and add it back to the main strip.
         state.Tab.Content = state.Host;
         state.FloatingWindow = null;
+        state.FloatingBadge = null;
 
         TerminalTabs.Items.Add(state.Tab);
         TerminalTabs.SelectedItem = state.Tab;
@@ -1888,7 +2010,7 @@ public partial class MainWindow : Window, ISessionPromptHost
     }
 
     // -------------------------------------------------------------------------
-    // Toolbar split buttons — act on the selected tab's active pane
+    // Toolbar pane controls — act on the selected tab's panes
     // -------------------------------------------------------------------------
 
     /// <summary>The selected tab's pane container, or null when it can't split (or is disconnected).</summary>
@@ -1897,26 +2019,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             ? state.Instance?.Panes
             : null;
 
-    private void UpdateSplitButtons()
-    {
-        if (SplitRightButton is null || SplitDownButton is null) return;
-        SplitRightButton.IsEnabled = SplitDownButton.IsEnabled = SelectedPanes() is { CanSplit: true };
-    }
-
-    private void OnSplitRightClicked(object? sender, RoutedEventArgs e) => SplitSelected(SplitAxis.LeftRight);
-    private void OnSplitDownClicked(object? sender, RoutedEventArgs e)  => SplitSelected(SplitAxis.TopBottom);
-
-    private void SplitSelected(SplitAxis axis)
-    {
-        if (SelectedPanes() is not { CanSplit: true } panes) return;
-        if (panes.CanSplitActive(axis))
-            panes.RequestSplit(axis);   // the new pane takes focus
-        else
-        {
-            Toast.Show(this, "The active pane is too small to split.");
-            FocusTerminal(panes.ActivePane);
-        }
-    }
+    private void UpdateSplitButtons() => PaneToolbar?.Refresh();
 
     private void OnTabSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {

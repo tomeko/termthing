@@ -35,7 +35,9 @@ public partial class FloatingSessionWindow : Window
         Action dockBackCallback,
         Func<Task> closeCallback,
         Action<Control, PlacementMode> openTabMenu,
-        Func<PaneLayoutView?> panes)
+        Func<PaneLayoutView?> panes,
+        Action detachTmux,
+        TmuxBadge? tmuxBadge = null)
     {
         InitializeComponent();
 
@@ -62,9 +64,11 @@ public partial class FloatingSessionWindow : Window
 
         DockBackButton.Click += OnDockBackClicked;
 
-        // Tab menu: the ▾ button, the icon, or a right-click anywhere on the toolbar.
-        MenuButton.Click += (_, _) => openTabMenu(MenuButton, PlacementMode.BottomEdgeAlignedLeft);
+        // Tab menu: the icon, or a right-click anywhere on the toolbar. SSH sessions also
+        // get their TMUX badge, which opens the tmux menu.
         titleIcon.Tapped += (_, _) => openTabMenu(titleIcon, PlacementMode.BottomEdgeAlignedLeft);
+        TmuxBadgeHost.Content = tmuxBadge;
+        TmuxBadgeHost.IsVisible = tmuxBadge is not null;
         void OnToolbarContext(object? sender, ContextRequestedEventArgs e)
         {
             e.Handled = true;
@@ -75,9 +79,11 @@ public partial class FloatingSessionWindow : Window
 
         // Quick split buttons; shown only for sessions that can split (the instance
         // can change on reconnect, so re-checked whenever the window is activated).
-        SplitRightButton.Click += (_, _) => _panes()?.RequestSplit(SplitAxis.LeftRight);
-        SplitDownButton.Click  += (_, _) => _panes()?.RequestSplit(SplitAxis.TopBottom);
-        UpdateSplitButtons();
+        PaneToolbar.Panes = _panes;
+        PaneToolbar.DetachTmux = detachTmux;
+        PaneToolbar.ShowMessage = message => Toast.Show(this, message);
+        AddHandler(PaneLayoutView.PanesChangedEvent, (_, _) => RefreshPaneToolbar());
+        RefreshPaneToolbar();
         Closing += OnWindowClosing;
 
         // When this floating window regains focus, hand it to the terminal so the
@@ -112,12 +118,15 @@ public partial class FloatingSessionWindow : Window
         }
     }
 
-    private void UpdateSplitButtons() =>
-        SplitRightButton.IsVisible = SplitDownButton.IsVisible = _panes() is { CanSplit: true };
+    /// <summary>
+    /// Re-reads the pane controls: on activation, when the panes change, and from the
+    /// owner when the tab enters or leaves tmux or reconnects.
+    /// </summary>
+    public void RefreshPaneToolbar() => PaneToolbar.Refresh();
 
     private void OnWindowActivated(object? sender, EventArgs e)
     {
-        UpdateSplitButtons();
+        RefreshPaneToolbar();
         var terminal = TerminalHost.GetVisualDescendants().OfType<TerminalControl>().FirstOrDefault();
         if (terminal is null) return;
         if (terminal.IsLoaded)

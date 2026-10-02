@@ -77,17 +77,26 @@ public static class TmuxClient
 
     /// <summary>
     /// The tmux client attached from this connection's shell, or null when the shell
-    /// isn't inside tmux (or the process tree can't be read).
+    /// isn't inside tmux (or the process tree can't be read). With several (split panes,
+    /// each in tmux), the first one found.
     /// </summary>
-    public static TmuxOwnClient? FindOwnClient(SshClient client)
+    public static TmuxOwnClient? FindOwnClient(SshClient client) => FindOwnClients(client).FirstOrDefault();
+
+    /// <summary>
+    /// Every tmux client attached from this connection's shells. More than one means
+    /// the connection's split panes run tmux each, and there is no telling which pane
+    /// is which: they all sit under the same <c>sshd</c>.
+    /// </summary>
+    public static IReadOnlyList<TmuxOwnClient> FindOwnClients(SshClient client)
     {
         var (_, output) = Run(client, OwnClientScript);
+        var clients = new List<TmuxOwnClient>();
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             var p = line.TrimEnd('\r').Split(' ', 2);
-            if (p.Length == 2 && p[0].StartsWith('/')) return new TmuxOwnClient(p[0], p[1]);
+            if (p.Length == 2 && p[0].StartsWith('/')) clients.Add(new TmuxOwnClient(p[0], p[1]));
         }
-        return null;
+        return clients;
     }
 
     /// <summary>Points an existing tmux client at another session (no nesting).</summary>

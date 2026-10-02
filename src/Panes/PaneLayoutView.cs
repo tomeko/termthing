@@ -35,9 +35,13 @@ namespace TermThing.Panes;
 public sealed class PaneLayoutView : Panel
 {
     private const double BarThickness = 4;
+    /// <summary>External layout: room left around the cell grid, so the active pane's frame never costs a cell.</summary>
+    private const double ExternalInset = 1;
     private static readonly IBrush ActiveBorderBrush = new SolidColorBrush(Color.Parse("#2196F3"));
     private static readonly IBrush BarBrush = new SolidColorBrush(Color.Parse("#3a3a3a"));
     private static readonly IBrush BarHoverBrush = new SolidColorBrush(Color.Parse("#2196F3"));
+    private static readonly IBrush UnusedAreaBrush = new SolidColorBrush(Color.Parse("#161616"));
+    private static readonly IBrush UnusedEdgeBrush = new SolidColorBrush(Color.Parse("#3a3a3a"));
     private static readonly TimeSpan DragApplyInterval = TimeSpan.FromMilliseconds(40);
 
     private readonly Dictionary<int, Border> _chrome = new();   // pane id → wrapper
@@ -48,6 +52,7 @@ public sealed class PaneLayoutView : Panel
     private int _nextId = 1;
     private int _activeId;
     private int? _zoomedId;
+    private Border? _unusedRight, _unusedBottom;   // external layout: shading past the tmux window
 
     public PaneLayoutView(Control first)
     {
@@ -67,6 +72,8 @@ public sealed class PaneLayoutView : Panel
         IsExternalLayout = true;
         _layout = layout;
         ClipToBounds = true;
+        _unusedRight = UnusedArea(new Thickness(1, 0, 0, 0));
+        _unusedBottom = UnusedArea(new Thickness(0, 1, 0, 0));
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         ApplyLayout(layout, createPane);
     }
@@ -85,6 +92,16 @@ public sealed class PaneLayoutView : Panel
 
     /// <summary>Raised (UI thread) when the active pane changes.</summary>
     public event EventHandler? ActivePaneChanged;
+
+    /// <summary>
+    /// Bubbles up when panes were added or removed, or zoom changed, so toolbars outside
+    /// the tab can follow (<c>PaneToolbar</c>). The tmux session raises it too when
+    /// another window, with other panes, comes on show.
+    /// </summary>
+    public static readonly RoutedEvent<RoutedEventArgs> PanesChangedEvent =
+        RoutedEvent.Register<PaneLayoutView, RoutedEventArgs>("PanesChanged", RoutingStrategies.Bubble);
+
+    private void RaisePanesChanged() => RaiseEvent(new RoutedEventArgs(PanesChangedEvent));
 
     /// <summary>Keyboard/menu asked for a split of the active pane. Null = splitting unsupported.</summary>
     public Action<SplitAxis>? SplitRequested { get; set; }
@@ -163,6 +180,7 @@ public sealed class PaneLayoutView : Panel
         if (!_chrome.ContainsKey(_activeId) && _mru.Count > 0) Activate(_mru[^1], focus: hadFocus);
         else UpdateChrome();
         InvalidateMeasure();
+        RaisePanesChanged();
         return removed;
     }
 
@@ -189,6 +207,7 @@ public sealed class PaneLayoutView : Panel
         AddChrome(id, pane);
         RebuildBars();
         Activate(id, focus: true);
+        RaisePanesChanged();
         return true;
     }
 
@@ -210,6 +229,7 @@ public sealed class PaneLayoutView : Panel
         if (_activeId == id) Activate(_mru[^1], focus: true);
         else UpdateChrome();
         InvalidateMeasure();
+        RaisePanesChanged();
         return true;
     }
 
@@ -288,6 +308,7 @@ public sealed class PaneLayoutView : Panel
             bar.IsVisible = id is null;
         UpdateChrome();
         InvalidateMeasure();
+        RaisePanesChanged();
     }
 
     /// <summary>A thin accent border marks the active pane once there is more than one.</summary>
@@ -491,29 +512,60 @@ public sealed class PaneLayoutView : Panel
             _layout.Resize((int)Math.Floor(finalSize.Width / cell.Width), (int)Math.Floor(finalSize.Height / cell.Height));
         foreach (var (child, rect) in Rects(finalSize))
             child.Arrange(rect);
+        if (IsExternalLayout) ArrangeUnusedArea(finalSize, cell);
         return finalSize;
+    }
+
+    /// <summary>
+    /// External layout: how many cells fit in <paramref name="size"/>, keeping back the
+    /// slack and frame room that <see cref="Rects"/> uses. The owner sizes tmux with this.
+    /// </summary>
+    public static (int Cols, int Rows) ExternalCellsFor(Size size, Size cell) =>
+        ((int)Math.Floor((size.Width - 2 * ExternalInset - cell.Width / 2) / cell.Width),
+         (int)Math.Floor((size.Height - 2 * ExternalInset - cell.Height / 2) / cell.Height));
+
+    private Border UnusedArea(Thickness edge)
+    {
+        var border = new Border
+        {
+            Background = UnusedAreaBrush,
+            BorderBrush = UnusedEdgeBrush,
+            BorderThickness = edge,
+            IsHitTestVisible = false,
+            IsVisible = false,
+        };
+        Children.Add(border);
+        return border;
+    }
+
+    /// <summary>
+    /// External layout: shades what the tmux window doesn't cover, when that is more than
+    /// rounding slack (tmux has sized the window for another, smaller client).
+    /// </summary>
+    private void ArrangeUnusedArea(Size size, Size cell)
+    {
+        double right = ExternalInset * 2 + (_layout.Width + 0.5) * cell.Width;
+        double bottom = ExternalInset * 2 + (_layout.Height + 0.5) * cell.Height;
+        bool showRight = size.Width - right >= cell.Width;
+        bool showBottom = size.Height - bottom >= cell.Height;
+        _unusedRight!.IsVisible = showRight;
+        _unusedBottom!.IsVisible = showBottom;
+        if (showRight) _unusedRight.Arrange(new Rect(right, 0, size.Width - right, size.Height));
+        if (showBottom) _unusedBottom.Arrange(new Rect(0, bottom, Math.Min(right, size.Width), size.Height - bottom));
     }
 
     /// <summary>Pixel rectangles for every visible pane and bar.</summary>
     private List<(Control, Rect)> Rects(Size size)
     {
         var result = new List<(Control, Rect)>();
-        if (_zoomedId is { } z)
-        {
-            var c = CellSize();
-            result.Add((_chrome[z], IsExternalLayout
-                ? new Rect(0, 0, (_layout.Width + 0.5) * c.Width, (_layout.Height + 0.5) * c.Height)
-                : new Rect(size)));
-            return result;
-        }
         if (IsExternalLayout)
         {
-            // tmux sizes panes in whole cells, and a pane's terminal must come out at exactly
-            // that many columns and rows. So: one cell per cell, anchored top-left, plus half
-            // a cell of slack at the far edges so pixel rounding can't cost a column.
-            var cell = CellSize();
-            var area = new Rect(0, 0, (_layout.Width + 0.5) * cell.Width, (_layout.Height + 0.5) * cell.Height);
-            Place(_layout.Root, area, cell.Width, cell.Height, result);
+            PlaceExternal(CellSize(), result);
+            return result;
+        }
+        if (_zoomedId is { } z)
+        {
+            result.Add((_chrome[z], new Rect(size)));
             return result;
         }
         // Cell → pixel scale that stretches the grid over the whole view.
@@ -521,6 +573,55 @@ public sealed class PaneLayoutView : Panel
         double sy = size.Height / Math.Max(1, _layout.Height);
         Place(_layout.Root, new Rect(size), sx, sy, result);
         return result;
+    }
+
+    /// <summary>
+    /// External layout: tmux sizes panes in whole cells, and a pane's terminal must come out
+    /// at exactly that many columns and rows. So every pane's content starts on its own cell
+    /// boundary, one cell per cell from the top-left, plus some slack against pixel rounding:
+    /// half a cell at the far edges of the window; at inner edges, whatever the separator cell
+    /// has left once the bar and the frames are in it (at least a pixel). The frame of the
+    /// active pane sits outside the content, and the bar is centred in the separator cell.
+    /// </summary>
+    private void PlaceExternal(Size cell, List<(Control, Rect)> result)
+    {
+        double cw = cell.Width, ch = cell.Height;
+        int cols = _layout.Width, rows = _layout.Height;
+
+        static double Slack(double c) => Math.Max(1, (c - 2 - BarThickness) / 2);
+        // Pixel position just past cell `to` (exclusive), slack included.
+        double EndX(int to) => ExternalInset + to * cw + (to >= cols ? cw / 2 : Slack(cw));
+        double EndY(int to) => ExternalInset + to * ch + (to >= rows ? ch / 2 : Slack(ch));
+        Rect Content(LayoutNode n) => new(
+            new Point(ExternalInset + n.X * cw, ExternalInset + n.Y * ch),
+            new Point(EndX(n.X + n.Width), EndY(n.Y + n.Height)));
+
+        if (_zoomedId is { } z)
+        {
+            // Unframed: one pane at the window's full size.
+            result.Add((_chrome[z], Content(_layout.Root)));
+            return;
+        }
+
+        double frame = PaneCount > 1 ? 1 : 0;   // see UpdateChrome
+        foreach (var leaf in _layout.Leaves())
+            if (_chrome.TryGetValue(leaf.PaneId, out var chrome))
+                result.Add((chrome, Content(leaf).Inflate(frame)));
+
+        foreach (var ((split, i), bar) in _bars)
+        {
+            var child = split.Children[i];
+            bool lr = split.Axis == SplitAxis.LeftRight;
+            // The gap between the two panes' frames, inside the separator cell.
+            double from = (lr ? EndX(child.X + child.Width) : EndY(child.Y + child.Height)) + frame;
+            double to = ExternalInset + (lr ? (child.X + child.Width + 1) * cw : (child.Y + child.Height + 1) * ch) - frame;
+            double thickness = Math.Clamp(to - from, 1, BarThickness);
+            double start = (from + to - thickness) / 2;
+            var extent = Content(split);
+            result.Add((bar, lr
+                ? new Rect(start, extent.Top, thickness, extent.Height)
+                : new Rect(extent.Left, start, extent.Width, thickness)));
+        }
     }
 
     /// <summary>

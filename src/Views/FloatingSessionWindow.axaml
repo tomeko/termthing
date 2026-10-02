@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+        xmlns:views="clr-namespace:TermThing.Views"
         x:Class="TermThing.Views.FloatingSessionWindow"
         Title="Session"
         RequestedThemeVariant="Dark"
@@ -28,12 +29,12 @@
         <!-- Toolbar band across the full width (also right-clickable for the tab menu). -->
         <Border x:Name="ToolbarBand" Grid.Row="0" Grid.ColumnSpan="3" Background="#1e1e1e"/>
 
-        <!-- Toolbar: icon + title + tab menu on the left; pane splits + Dock Back on the right.
-             Right-click anywhere on it (or click the icon / ▾) for the tab menu. -->
+        <!-- Toolbar: icon + title + TMUX badge on the left; pane controls + Dock Back on the right.
+             Right-click anywhere on it (or click the icon) for the tab menu; the badge has tmux's. -->
         <Grid x:Name="Toolbar"
               Grid.Row="0" Grid.Column="2"
               Background="#1e1e1e"
-              ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto"
+              ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto"
               Margin="8,4">
             <materialIcons:MaterialIcon x:Name="TitleIcon"
                                         Grid.Column="0"
@@ -46,35 +47,14 @@
                        VerticalAlignment="Center"
                        Foreground="#cccccc"
                        FontSize="13"/>
-            <Button x:Name="MenuButton"
-                    Grid.Column="2"
-                    Content="▾"
-                    Padding="4,0"
-                    Margin="4,0,0,0"
-                    VerticalAlignment="Center"
-                    Background="Transparent"
-                    BorderThickness="0"
-                    ToolTip.Tip="Tab menu (split, tmux, …)"/>
-            <Button x:Name="SplitRightButton"
-                    Grid.Column="4"
-                    Padding="5,3"
-                    Margin="0,0,2,0"
-                    Background="Transparent"
-                    BorderThickness="0"
-                    ToolTip.Tip="Split right (Alt+Shift+=)">
-                <materialIcons:MaterialIcon Kind="ViewSplitVertical" Width="16" Height="16"/>
-            </Button>
-            <Button x:Name="SplitDownButton"
-                    Grid.Column="5"
-                    Padding="5,3"
-                    Margin="0,0,8,0"
-                    Background="Transparent"
-                    BorderThickness="0"
-                    ToolTip.Tip="Split down (Alt+Shift+-)">
-                <materialIcons:MaterialIcon Kind="ViewSplitHorizontal" Width="16" Height="16"/>
-            </Button>
+            <ContentControl x:Name="TmuxBadgeHost"
+                            Grid.Column="2"
+                            Margin="8,0,0,0"
+                            VerticalAlignment="Center"/>
+            <!-- Pane controls: TMUX / SESSION, then zoom, close, splits. -->
+            <views:PaneToolbar x:Name="PaneToolbar" Grid.Column="4" Margin="0,0,8,0"/>
             <Button x:Name="DockBackButton"
-                    Grid.Column="6"
+                    Grid.Column="5"
                     Content="⤵ Dock Back"
                     Padding="8,3"/>
         </Grid>

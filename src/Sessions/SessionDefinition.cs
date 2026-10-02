@@ -109,9 +109,10 @@ public record SshSettings : SessionSettings
     public bool DeferInitialization { get; init; }
 
     /// <summary>
-    /// tmux session to attach on connect (<c>tmux new-session -A -s NAME</c>, so it is
-    /// created if missing). Null/empty = don't. Not applied with <see cref="DeferInitialization"/>,
-    /// whose first prompt may not be a shell.
+    /// tmux session to show on connect (<c>new-session -A -s NAME</c>, so it is created if
+    /// missing). Null/empty = don't. On tmux 3.2+ the tab opens in control mode; older tmux
+    /// gets the attach typed into the shell, which is skipped with
+    /// <see cref="DeferInitialization"/>, whose first prompt may not be a shell.
     /// </summary>
     public string? TmuxAutoAttach { get; init; }
 
