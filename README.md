@@ -53,8 +53,6 @@ dotnet run --project src/TermThing.csproj
 ### A. ...
 <img src="./doc/images/arnoldyeah.jpg" style="width: 200px">
 
-
-
 ## Acknowledgements
 
 - [Iciclecreek.Avalonia.Terminal](https://github.com/tomlm/Iciclecreek.Avalonia.Terminal) by Tom Laird-McConnell: the terminal control powering every session. Really what makes this tick.
