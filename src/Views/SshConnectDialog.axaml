@@ -68,7 +68,7 @@
                     <TextBox Grid.Column="1" x:Name="TmuxSessionTextBox" PlaceholderText="(none)"/>
                 </Grid>
                 <TextBlock x:Name="TmuxSessionHint"
-                           Text="Open this tmux session (created if missing) in the tab on connect, through control mode on tmux 3.2+. Older tmux: typed into the shell, and not with Defer initialization."
+                           Text="Open this tmux session (created if missing) in the tab on connect, through control mode on tmux 3.2+. Older tmux: typed into the shell (unless legacy tmux is off in Settings), and not with Defer initialization."
                            FontSize="11"
                            Foreground="Gray"
                            TextWrapping="Wrap"/>

@@ -57,6 +57,27 @@
                     <CheckBox x:Name="SkipNewlinePasteConfirmCheckBox"
                               Content="Skip newline-paste warning (the extra warning shown when pasted text contains a newline that would execute)"/>
 
+                    <TextBlock Text="tmux"
+                               FontWeight="SemiBold"
+                               Margin="0,8,0,2"/>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <TextBlock Text="Legacy tmux actions (typed into the shell):"
+                                   VerticalAlignment="Center"/>
+                        <ComboBox x:Name="TmuxLegacyModeComboBox"
+                                  Width="300"
+                                  VerticalAlignment="Center">
+                            <ComboBoxItem Content="Only when needed (tmux older than 3.2)"/>
+                            <ComboBoxItem Content="Always (also a Legacy submenu)"/>
+                            <ComboBoxItem Content="Never"/>
+                        </ComboBox>
+                    </StackPanel>
+
+                    <TextBlock Text="tmux 3.2 and later is shown natively (control mode). The legacy actions type tmux commands into the tab's shell instead: they're the only option on older hosts, and they also reattach a shell that was in tmux when the connection dropped. With Never, TermThing never types tmux commands."
+                               FontSize="11"
+                               Foreground="Gray"
+                               TextWrapping="Wrap"/>
+
                     <TextBlock Text="SFTP browser"
                                FontWeight="SemiBold"
                                Margin="0,8,0,2"/>

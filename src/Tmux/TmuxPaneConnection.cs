@@ -20,19 +20,88 @@ public sealed class TmuxPaneConnection : IPtyConnection
 {
     private readonly Channel<byte[]> _output = Channel.CreateUnbounded<byte[]>(
         new UnboundedChannelOptions { SingleReader = true });
+    private readonly object _holdLock = new();
+    private List<byte[]>? _held;
+    private long _pending;          // bytes queued for the terminal and not yet read
+    private Action? _drained;
 
-    public TmuxPaneConnection(int paneId, Action<int, byte[]>? input = null)
+    /// <param name="hold">
+    /// Start holding output back (see <see cref="Release"/>), so the pane's existing
+    /// content can be put in front of it.
+    /// </param>
+    public TmuxPaneConnection(int paneId, Action<int, byte[]>? input = null, bool hold = false)
     {
         PaneId = paneId;
-        ReaderStream = new OutputStream(_output.Reader);
+        if (hold) _held = [];
+        ReaderStream = new OutputStream(_output.Reader, OnRead);
         WriterStream = new InputStream(paneId, input);
     }
 
     /// <summary>The tmux pane id (<c>%N</c> → N).</summary>
     public int PaneId { get; }
 
+    /// <summary>True while output is held back, waiting for <see cref="Release"/>.</summary>
+    public bool IsHeld
+    {
+        get { lock (_holdLock) return _held is not null; }
+    }
+
+    /// <summary>Bytes queued for the terminal that it hasn't read yet (held output not included).</summary>
+    public long PendingBytes => Interlocked.Read(ref _pending);
+
     /// <summary>Queues output for the terminal. Thread-safe; called on the control channel's reader thread.</summary>
-    public void Feed(byte[] data) => _output.Writer.TryWrite(data);
+    public void Feed(byte[] data)
+    {
+        lock (_holdLock)
+        {
+            if (_held is not null) { _held.Add(data); return; }
+        }
+        Enqueue(data);
+    }
+
+    /// <summary>Starts holding output back again, until the next <see cref="Release"/>.</summary>
+    public void Hold()
+    {
+        lock (_holdLock) _held ??= [];
+    }
+
+    /// <summary>
+    /// Stops holding: queues <paramref name="prefix"/> (the pane's existing content), then
+    /// the output held since the connection was made. Does nothing if not held.
+    /// </summary>
+    public void Release(byte[]? prefix = null)
+    {
+        lock (_holdLock)
+        {
+            if (_held is null) return;
+            if (prefix is { Length: > 0 }) Enqueue(prefix);
+            foreach (var data in _held) Enqueue(data);
+            _held = null;
+        }
+    }
+
+    /// <summary>
+    /// Calls <paramref name="callback"/> once, on whatever thread notices, when the
+    /// terminal has read everything queued: right away if it already has.
+    /// </summary>
+    public void WhenDrained(Action callback)
+    {
+        Volatile.Write(ref _drained, callback);
+        if (PendingBytes == 0) Interlocked.Exchange(ref _drained, null)?.Invoke();
+    }
+
+    private void Enqueue(byte[] data)
+    {
+        Interlocked.Add(ref _pending, data.Length);
+        if (!_output.Writer.TryWrite(data)) Interlocked.Add(ref _pending, -data.Length);
+    }
+
+    /// <summary>Terminal read thread: <paramref name="count"/> bytes have been handed over.</summary>
+    private void OnRead(int count)
+    {
+        if (Interlocked.Add(ref _pending, -count) == 0)
+            Interlocked.Exchange(ref _drained, null)?.Invoke();
+    }
 
     /// <summary>Ends the stream: the terminal sees EOF once it has read what is queued.</summary>
     public void Close() => _output.Writer.TryComplete();
@@ -57,7 +126,7 @@ public sealed class TmuxPaneConnection : IPtyConnection
     public void Dispose() => Close();
 
     /// <summary>Reads the queued chunks; returns 0 once the pane is closed and drained.</summary>
-    private sealed class OutputStream(ChannelReader<byte[]> reader) : Stream
+    private sealed class OutputStream(ChannelReader<byte[]> reader, Action<int> read) : Stream
     {
         private byte[]? _current;
         private int _offset;
@@ -78,6 +147,7 @@ public sealed class TmuxPaneConnection : IPtyConnection
                 Buffer.BlockCopy(more, 0, buffer, offset + n, more.Length);
                 n += more.Length;
             }
+            read(n);
             return n;
         }
 

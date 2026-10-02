@@ -67,6 +67,11 @@ public partial class SettingsWindow : Window
     private CheckBox _skipNewlinePasteConfirm = null!;
     private CheckBox _hideImportedSshConfig = null!;
     private CheckBox _sftpUse12HourTime = null!;
+    private ComboBox _tmuxLegacyMode = null!;
+
+    // The dropdown's items, in order.
+    private static readonly TmuxLegacyMode[] TmuxLegacyModes =
+        [TmuxLegacyMode.WhenNeeded, TmuxLegacyMode.Always, TmuxLegacyMode.Never];
     private TextBox  _builtInExtBox = null!;
     private CheckBox _builtInDefaultCheck = null!;
 
@@ -91,6 +96,7 @@ public partial class SettingsWindow : Window
         _skipNewlinePasteConfirm = this.FindControl<CheckBox>("SkipNewlinePasteConfirmCheckBox")!;
         _hideImportedSshConfig = this.FindControl<CheckBox>("HideImportedSshConfigCheckBox")!;
         _sftpUse12HourTime  = this.FindControl<CheckBox>("SftpUse12HourTimeCheckBox")!;
+        _tmuxLegacyMode     = this.FindControl<ComboBox>("TmuxLegacyModeComboBox")!;
         _builtInExtBox      = this.FindControl<TextBox>("BuiltInExtBox")!;
         _builtInDefaultCheck = this.FindControl<CheckBox>("BuiltInDefaultCheck")!;
 
@@ -100,6 +106,7 @@ public partial class SettingsWindow : Window
         _skipNewlinePasteConfirm.IsChecked = SettingsService.App.SkipNewlinePasteConfirmation;
         _hideImportedSshConfig.IsChecked = SettingsService.App.HideImportedSshConfig;
         _sftpUse12HourTime.IsChecked = SettingsService.App.SftpUse12HourTime;
+        _tmuxLegacyMode.SelectedIndex = Math.Max(0, Array.IndexOf(TmuxLegacyModes, SettingsService.App.TmuxLegacyMode));
 
         // Populate built-in editor controls
         var builtIn = SettingsService.App.Applications
@@ -143,6 +150,8 @@ public partial class SettingsWindow : Window
         SettingsService.App.SkipNewlinePasteConfirmation = _skipNewlinePasteConfirm.IsChecked == true;
         SettingsService.App.HideImportedSshConfig = _hideImportedSshConfig.IsChecked == true;
         SettingsService.App.SftpUse12HourTime = _sftpUse12HourTime.IsChecked == true;
+        if (_tmuxLegacyMode.SelectedIndex is >= 0 and var i && i < TmuxLegacyModes.Length)
+            SettingsService.App.TmuxLegacyMode = TmuxLegacyModes[i];
 
         var newApps = new List<ApplicationEntry>();
 

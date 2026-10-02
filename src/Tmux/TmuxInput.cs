@@ -50,6 +50,45 @@ public static partial class TmuxInput
         }
     }
 
+    /// <summary>
+    /// Commands that paste <paramref name="text"/> into pane <paramref name="paneId"/>
+    /// through a tmux buffer. <c>paste-buffer -p</c> adds bracketed-paste markers only
+    /// when the program in the pane asked for them, which tmux knows and this side may
+    /// not (tmux 3.4 has no format for it, so a program that turned it on before we
+    /// attached is invisible to us). Newlines become CRs, as in a terminal paste.
+    /// </summary>
+    public static IEnumerable<string> Paste(int paneId, string text)
+    {
+        var bytes = Encoding.UTF8.GetBytes(text.Replace("\r\n", "\n"));
+        if (bytes.Length == 0) yield break;
+        bool first = true;
+        for (int at = 0; at < bytes.Length;)
+        {
+            int end = Math.Min(bytes.Length, at + BytesPerCommand);
+            // Don't split a UTF-8 sequence over two commands.
+            while (end < bytes.Length && end > at + 1 && (bytes[end] & 0xC0) == 0x80) end--;
+            var sb = new StringBuilder(end - at + 48);
+            sb.Append(first ? "set-buffer" : "set-buffer -a").Append(" -b ").Append(PasteBuffer).Append(" -- \"");
+            for (int i = at; i < end; i++)
+            {
+                byte b = bytes[i];
+                // tmux expands $ and ~ and handles \ escapes inside double quotes; an octal
+                // escape is the one form that always means "this byte".
+                if (b < 0x20 || b == 0x7f || b is (byte)'\\' or (byte)'"' or (byte)'$' or (byte)'~')
+                    sb.Append('\\').Append(Convert.ToString(b, 8).PadLeft(3, '0'));
+                else
+                    sb.Append((char)b);
+            }
+            // Raw UTF-8 above stays as bytes: decode the line back the way it is sent.
+            yield return Encoding.UTF8.GetString(Encoding.Latin1.GetBytes(sb.Append('"').ToString()));
+            first = false;
+            at = end;
+        }
+        yield return $"paste-buffer -p -d -b {PasteBuffer} -t %{paneId}";
+    }
+
+    private const string PasteBuffer = "termthing-paste";
+
     // DA1/DA2/kitty-keyboard/XTSMGRAPHICS replies; CPR/DECXCPR; DSR; window reports;
     // DECREQTPARM; DECRQDE; DECSLE-style; focus in/out; DCS replies (DA3, XTVERSION,
     // DECRQSS, XTGETTCAP); OSC replies (colours, clipboard).

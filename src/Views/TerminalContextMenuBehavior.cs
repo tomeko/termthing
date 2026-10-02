@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -40,6 +41,9 @@ public static class TerminalContextMenuBehavior
 
     private static readonly Dictionary<TerminalControl, AttachContext> _contexts = new();
 
+    // Kept apart from _contexts, which is dropped when a terminal leaves the tree (float/dock).
+    private static readonly ConditionalWeakTable<TerminalControl, Func<string, bool>> _pasteHandlers = new();
+
     private sealed class AttachContext
     {
         public SessionDefinition? Definition;
@@ -67,6 +71,18 @@ public static class TerminalContextMenuBehavior
         tc.AddHandler(InputElement.PointerPressedEvent,      OnPointerPressed, RoutingStrategies.Tunnel);
         tc.AddHandler(InputElement.PointerWheelChangedEvent, OnPointerWheel,   RoutingStrategies.Tunnel);
         tc.AddHandler(InputElement.KeyDownEvent,             OnKeyDown,        RoutingStrategies.Tunnel);
+    }
+
+    /// <summary>
+    /// Hands pastes into <paramref name="tc"/> (already sanitized and confirmed) to
+    /// <paramref name="handler"/> instead of the emulator, e.g. a tmux pane, where tmux
+    /// knows better whether to bracket them. The handler returns false to decline, and
+    /// the emulator pastes as usual. Null removes it.
+    /// </summary>
+    public static void SetPasteHandler(TerminalControl tc, Func<string, bool>? handler)
+    {
+        if (handler is null) _pasteHandlers.Remove(tc);
+        else _pasteHandlers.AddOrUpdate(tc, handler);
     }
 
     // -----------------------------------------------------------------------
@@ -290,6 +306,12 @@ public static class TerminalContextMenuBehavior
         // bracketed-paste terminator; a newline inside the bracket is literal.
         if (execute)
             text = text.TrimEnd('\n');
+
+        if (_pasteHandlers.TryGetValue(tc, out var handler) && handler(text))
+        {
+            if (execute) await tc.SendInputAsync("\r");
+            return;
+        }
 
         terminal.Paste(text);
 

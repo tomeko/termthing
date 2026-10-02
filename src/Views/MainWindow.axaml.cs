@@ -1289,16 +1289,30 @@ public partial class MainWindow : Window, ISessionPromptHost
     /// Legacy tmux in a freshly connected SSH tab: types the attach of the session the
     /// shell was in when it dropped, else of the configured auto-attach. Not when the
     /// launcher already opened tmux through control mode (tmux 3.2+). One attach only —
-    /// a second one would be typed into tmux itself.
+    /// a second one would be typed into tmux itself. Never when legacy tmux is turned off
+    /// in Settings.
     /// </summary>
-    private static void StartTmux(TabState state, ISessionInstance instance)
+    private void StartTmux(TabState state, ISessionInstance instance)
     {
         if (instance is not SshSessionInstance ssh || ssh.IsTmuxMode || ssh.TmuxAutoAttachHandled) return;
         var session = state.TmuxSession;
-        if (string.IsNullOrEmpty(session) && state.Def.Settings is SshSettings ss)
-            session = ss.TmuxAutoAttach;
-        if (!string.IsNullOrEmpty(session))
-            ssh.AttachTmuxWhenReady(session);
+        var autoAttach = (state.Def.Settings as SshSettings)?.TmuxAutoAttach;
+        if (string.IsNullOrEmpty(session)) session = autoAttach;
+        if (string.IsNullOrEmpty(session)) return;
+
+        if (SettingsService.App.TmuxLegacyMode == TmuxLegacyMode.Never)
+        {
+            // Only an auto-attach the user configured is worth explaining; a reattach of a
+            // tmux they typed themselves just doesn't happen.
+            if (session == autoAttach)
+                Toast.Show(OwnerOf(state),
+                    ssh.TmuxVersion is { } version
+                        ? $"tmux: {version} is too old for control mode (3.2+), and legacy tmux is off in Settings. Not attaching '{session}'."
+                        : $"tmux: not attaching '{session}': tmux wasn't found on this host.",
+                    TimeSpan.FromSeconds(6));
+            return;
+        }
+        ssh.AttachTmuxWhenReady(session);
     }
 
     /// <summary>Opens the tab menu at <paramref name="anchor"/> (a header icon/button, or the floating window's toolbar).</summary>
@@ -1443,8 +1457,13 @@ public partial class MainWindow : Window, ISessionPromptHost
         else
         {
             root.Items.Add(Disabled("Control mode needs tmux 3.2 or later"));
-            root.Items.Add(new Separator());
-            BuildLegacyItems(root.Items, state, ssh, menu);
+            if (SettingsService.App.TmuxLegacyMode == TmuxLegacyMode.Never)
+                root.Items.Add(Disabled("Legacy tmux actions are off (Settings → General)"));
+            else
+            {
+                root.Items.Add(new Separator());
+                BuildLegacyItems(root.Items, state, ssh, menu);
+            }
         }
 
         root.Items.Add(new Separator());
@@ -1498,9 +1517,12 @@ public partial class MainWindow : Window, ISessionPromptHost
         newTab.Items.Add(newTabSession);
         root.Items.Add(newTab);
 
-        var legacy = new MenuItem { Header = "Legacy (typed into the shell)" };
-        BuildLegacyItems(legacy.Items, state, ssh, menu);
-        root.Items.Add(legacy);
+        if (SettingsService.App.TmuxLegacyMode == TmuxLegacyMode.Always)
+        {
+            var legacy = new MenuItem { Header = "Legacy (typed into the shell)" };
+            BuildLegacyItems(legacy.Items, state, ssh, menu);
+            root.Items.Add(legacy);
+        }
     }
 
     /// <summary>A tab in tmux mode: the session it shows, and what to do with it.</summary>

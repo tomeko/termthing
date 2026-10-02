@@ -1054,6 +1054,10 @@ internal sealed class SshSessionInstance : ISessionInstance
             if (ReferenceEquals(_tmuxControl, control)) _titles.Refresh();
         };
         control.Ended += reason => OnTmuxControlEnded(control, reason);
+        control.Message += message =>
+        {
+            if (ReferenceEquals(_tmuxControl, control)) RaiseNotice(message);
+        };
         control.SessionNameChanged += (_, _) =>
         {
             if (ReferenceEquals(_tmuxControl, control)) RaiseTmuxStateChanged();

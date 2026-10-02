@@ -44,19 +44,35 @@ public static class TmuxControlProtocol
 {
     private static readonly byte[] OutputPrefix = "%output %"u8.ToArray();
 
+    private static readonly byte[] ExtendedOutputPrefix = "%extended-output %"u8.ToArray();
+    private static readonly byte[] ExtendedOutputSeparator = " : "u8.ToArray();
+
     /// <summary>
-    /// Recognises <c>%output %&lt;pane&gt; &lt;data&gt;</c> and decodes its data.
-    /// Returns false for any other line.
+    /// Recognises <c>%output %&lt;pane&gt; &lt;data&gt;</c>, and its flow-control form
+    /// <c>%extended-output %&lt;pane&gt; &lt;age&gt; … : &lt;data&gt;</c> (what tmux sends
+    /// instead once <c>pause-after</c> is set), and decodes the data. Returns false for
+    /// any other line.
     /// </summary>
     public static bool TryParseOutput(ReadOnlySpan<byte> line, out int paneId, out byte[] data)
     {
         paneId = -1;
         data = [];
-        if (!line.StartsWith(OutputPrefix)) return false;
-        var rest = line[OutputPrefix.Length..];
-        int space = rest.IndexOf((byte)' ');
-        if (space <= 0 || !TryParseInt(rest[..space], out paneId)) return false;
-        data = DecodeOctal(rest[(space + 1)..]);
+        bool extended;
+        if (line.StartsWith(OutputPrefix)) { line = line[OutputPrefix.Length..]; extended = false; }
+        else if (line.StartsWith(ExtendedOutputPrefix)) { line = line[ExtendedOutputPrefix.Length..]; extended = true; }
+        else return false;
+
+        int space = line.IndexOf((byte)' ');
+        if (space <= 0 || !TryParseInt(line[..space], out paneId)) return false;
+        var rest = line[(space + 1)..];
+        if (extended)
+        {
+            // The fields before the data are numbers, so the first " : " is the separator.
+            int at = rest.IndexOf(ExtendedOutputSeparator);
+            if (at < 0) return false;
+            rest = rest[(at + ExtendedOutputSeparator.Length)..];
+        }
+        data = DecodeOctal(rest);
         return true;
     }
 
