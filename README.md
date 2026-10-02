@@ -1,6 +1,6 @@
-# TermThing
+<img src="doc/images/tt_logo2.png">
 
-Yet another terminal emulator thing inspired by the likes of MobaXTerm. Cross-platform desktop application built on dotnet 10/Avalonia, built on the shoulders of some really awesome dotnet libraries.
+**TermThing:** Yet another terminal emulator thing inspired by the likes of MobaXTerm. Cross-platform desktop application built on dotnet 10/Avalonia, built on the shoulders of some really awesome dotnet libraries.
 
 <img src="doc/images/tt_ss2.png" style="width=50%"/>
 
@@ -48,9 +48,9 @@ dotnet run --project src/TermThing.csproj
 ```
 ## FAQ
 
-### Q. 
+### Q. ???
 
-### A.
+### A. ...
 <img src="./doc/images/arnoldyeah.jpg" style="width: 200px">
 
 
