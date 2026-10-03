@@ -2,6 +2,7 @@ using Avalonia.Threading;
 using Renci.SshNet;
 using System.Globalization;
 using System.Threading;
+using TermThing.Diagnostics;
 
 namespace TermThing.Ssh;
 
@@ -73,13 +74,28 @@ public sealed class SysmonPoller : IDisposable
         _timer = new Timer(_ => Tick(), null, TimeSpan.Zero, interval);
     }
 
+    // Runs on a timer thread, where an escaping exception terminates the process.
+    // Teardown disposes the SSH client without waiting for an in-flight tick.
     private void Tick()
+    {
+        try { TickCore(); }
+        catch (Exception ex) when (_disposed || ex is ObjectDisposedException)
+        {
+            // Session is going away — nothing to report.
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("sysmon", "Poll failed", ex);
+        }
+    }
+
+    private void TickCore()
     {
         if (_disposed) return;
         if (Interlocked.Exchange(ref _ticking, 1) == 1) return;
         try
         {
-            if (!_client.IsConnected) return;
+            if (!_client.IsAlive()) return;
 
             // Detect remote OS on first tick.
             if (_remoteOs == RemoteOs.Unknown)

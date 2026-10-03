@@ -85,9 +85,9 @@ public sealed class SshPtyConnection : IPtyConnection
 
     public bool WaitForExit(int milliseconds)
     {
-        if (_readerStream.HasClosed || !_client.IsConnected) return true;
+        if (_readerStream.HasClosed || !_client.IsAlive()) return true;
         // The terminal calls this right after EOF to let the exit land; actually wait for it.
-        return _readerStream.WaitForClosed(milliseconds) || !_client.IsConnected;
+        return _readerStream.WaitForClosed(milliseconds) || !_client.IsAlive();
     }
 
     internal void FireConnectionClosed()
@@ -108,7 +108,7 @@ public sealed class SshPtyConnection : IPtyConnection
         _readerStream.SignalClosed();
         try { _shell.Close(); } catch { }
         if (OwnsClient)
-            try { if (_client.IsConnected) _client.Disconnect(); } catch { }
+            try { if (_client.IsAlive()) _client.Disconnect(); } catch { }
     }
 
     public void Resize(int cols, int rows)
@@ -271,7 +271,7 @@ public sealed class SshPtyConnection : IPtyConnection
                 if (linked.IsCancellationRequested)
                     break;
                 bool isConnected;
-                try { isConnected = _client.IsConnected; }
+                try { isConnected = _client.IsAlive(); }
                 catch (ObjectDisposedException) { break; }
                 if (!isConnected)
                     break;

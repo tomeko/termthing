@@ -30,10 +30,12 @@ public sealed class TempSettings
     public int ActiveLeftTab { get; set; } = 0;
 
     // -----------------------------------------------------------------------
-    // SFTP DataGrid column widths (keyed by column header text)
+    // SFTP DataGrid columns the user resized by hand (keyed by header text).
+    // Other columns size to their content. Replaces the old SftpColumnWidths,
+    // which stored every column and so pinned them all.
     // -----------------------------------------------------------------------
 
-    public Dictionary<string, double> SftpColumnWidths { get; set; } = [];
+    public Dictionary<string, double> SftpUserColumnWidths { get; set; } = [];
 
     // -----------------------------------------------------------------------
     // New-session toolbar

@@ -66,13 +66,6 @@ public sealed class AppSettings
     public bool FirstRunCompleted { get; set; } = false;
 
     /// <summary>
-    /// When <c>true</c>, imported OpenSSH-config groups are kept in the config
-    /// (and still auto-refreshed) but hidden from the sessions tree. Lets users
-    /// keep the import wired up without cluttering their tree.
-    /// </summary>
-    public bool HideImportedSshConfig { get; set; } = false;
-
-    /// <summary>
     /// When <c>true</c>, the SFTP browser's Modified column shows 12-hour time with
     /// AM/PM instead of 24-hour time.
     /// </summary>

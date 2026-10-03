@@ -196,6 +196,16 @@ public sealed class SessionDefinition
         };
 
     /// <summary>
+    /// Where this session was imported from (e.g. <c>"ssh-config"</c>); <c>null</c> for
+    /// sessions the user created. Together with <see cref="ImportKey"/> lets a re-import
+    /// update this session in place rather than adding a duplicate.
+    /// </summary>
+    public string? ImportSource { get; set; }
+
+    /// <summary>Identity within <see cref="ImportSource"/> — for ssh-config, the <c>Host</c> alias.</summary>
+    public string? ImportKey { get; set; }
+
+    /// <summary>
     /// <see cref="Material.Icons.MaterialIconKind"/> enum member name
     /// (e.g. <c>"Earth"</c>). <c>null</c> means use the kind default.
     /// </summary>
@@ -220,10 +230,13 @@ public sealed class SessionDefinition
         Settings = Settings,
         IconKind  = IconKind,
         IconColor = IconColor,
+        ImportSource = ImportSource,
+        ImportKey    = ImportKey,
     };
 
     /// <summary>
-    /// Returns a copy with a unique name suffix. If the name already ends in
+    /// Returns a copy with a unique name suffix. The copy is not linked to the
+    /// import source, so a re-import keeps updating only the original. If the name already ends in
     /// <c>" (copy)"</c> or <c>" (copy N)"</c> the counter is incremented instead
     /// of appending another <c>" (copy)"</c>.
     /// </summary>

@@ -22,15 +22,14 @@
             <TreeView.ItemTemplate>
                 <TreeDataTemplate ItemsSource="{Binding Children}">
                     <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
-                                ToolTip.Tip="{Binding ReadOnlyTooltip}">
+                                ToolTip.Tip="{Binding ToolTip}">
                         <materialIcons:MaterialIcon Kind="{Binding IconKindEnum}"
                                                     Width="16" Height="16"
                                                     Foreground="{Binding IconBrush}"
                                                     VerticalAlignment="Center"/>
                         <TextBlock Text="{Binding Header}"
                                    Padding="2,1"
-                                   VerticalAlignment="Center"
-                                   FontStyle="{Binding FontStyle}"/>
+                                   VerticalAlignment="Center"/>
                         <TextBlock Text="{Binding ChildCountLabel}"
                                    IsVisible="{Binding ShowChildCount}"
                                    Foreground="#AAAAAA"

@@ -21,6 +21,8 @@ using System.Threading.Tasks;
 using TermThing.Configuration;
 using TermThing.Editor;
 using TermThing.Sftp;
+using TermThing.Diagnostics;
+using TermThing.Ssh;
 
 namespace TermThing.Views;
 
@@ -162,6 +164,7 @@ public partial class SftpFileBrowserView : UserControl
     private PointerPressedEventArgs? _dragOutPointerArgs;
     private bool _dragOutInProgress;
     private bool _dragOutReleased;       // button released while a drag-out was still preparing
+    private CancellationTokenSource? _dragOutCts; // cancels the pre-download when the drag is abandoned
 
     // Where drag-out stages files for the OS. Anything dropped from here is our own
     // drag coming back, never something the user meant to upload.
@@ -169,15 +172,20 @@ public partial class SftpFileBrowserView : UserControl
         Path.Combine(Path.GetTempPath(), "termthing", "dragout");
 
     // Internal drag tracking — while a drag originated from THIS view is in flight,
-    // _internalDragSource holds the source entry. OnDrop checks this to distinguish
+    // _internalDragSources holds the source entries. OnDrop checks this to distinguish
     // an internal move-within-SFTP from an OS-level upload (file drag from desktop).
-    private SftpEntry? _internalDragSource;
+    private IReadOnlyList<SftpEntry>? _internalDragSources;
 
     // Set in the pointer-pressed tunnel handler when the user left-clicks the
     // row that was already the sole selected entry (no Shift/Ctrl). On pointer
     // release — if no drag started — we clear the selection so users can
     // toggle off a single highlight.
     private bool _clickedSoleSelectedItem;
+
+    // A bare press on a row inside a multi-selection keeps the selection, so the
+    // whole selection can be dragged. If no drag starts, the release collapses the
+    // selection to this row, as a plain click would have (Explorer/Finder behaviour).
+    private SftpEntry? _collapseSelectionOnRelease;
 
     private string? _lastTerminalDir;
 
@@ -293,10 +301,7 @@ public partial class SftpFileBrowserView : UserControl
         // a row is focused, which rarely holds (the app focuses the terminal).
         AddHandler(KeyDownEvent, OnPanelKeyDown, RoutingStrategies.Tunnel);
 
-        // Restore persisted column widths
-        RestoreColumnWidths();
-
-        // Persist column widths when they change (debounced via a timer per column)
+        // Persist hand-sized column widths (others fit their content on each listing)
         SubscribeColumnWidthPersistence();
 
         // Bookmark panel: restore persisted state and wire drag handlers
@@ -332,7 +337,7 @@ public partial class SftpFileBrowserView : UserControl
     private async Task NavigateAsync(string path)
     {
         if (_navigating) return;
-        if (!_sftpClient.IsConnected) return;
+        if (!_sftpClient.IsAlive()) return;
         _navigating = true;
 
         try
@@ -347,6 +352,10 @@ public partial class SftpFileBrowserView : UserControl
 
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
+                _dragOutPending     = null;
+                _dragOutPointerArgs = null;
+                _collapseSelectionOnRelease = null;
+
                 var listing = new List<SftpEntry>(files.Count + 1);
                 if (path != "/")
                     listing.Add(new SftpEntry
@@ -366,12 +375,18 @@ public partial class SftpFileBrowserView : UserControl
                 foreach (var entry in listing)
                     Entries.Add(entry);
 
+                AutoFitColumns(listing);
+
                 if (keep is not null)
                     RestoreViewState(keep.Value);
                 _currentPath     = path;
                 _pathBox.Text    = _currentPath;
                 UpdateSyncButtonVisibility();
             });
+        }
+        catch (ObjectDisposedException)
+        {
+            // The session was torn down while the listing was in flight — nothing to show.
         }
         catch (Exception ex)
         {
@@ -572,7 +587,14 @@ public partial class SftpFileBrowserView : UserControl
         finally { _suppressMonitorEvents = false; }
     }
 
-    private void OnRefreshClicked(object? sender, RoutedEventArgs e) => Refresh();
+    /// <summary>User-initiated refresh (button, menu, F5): also re-fits the columns.</summary>
+    private void RefreshAndRefitColumns()
+    {
+        ResetColumnWidths();
+        Refresh();
+    }
+
+    private void OnRefreshClicked(object? sender, RoutedEventArgs e) => RefreshAndRefitColumns();
 
     /// <summary>
     /// Raised when the user clicks the SFTP browser's close (✕) button. The owning
@@ -762,7 +784,7 @@ public partial class SftpFileBrowserView : UserControl
         _menuOpen.IsEnabled     = single && allFiles;
         _menuOpenWith.IsEnabled = single && allFiles;
         _menuTail.IsEnabled     = single && allFiles
-                                  && _sshClient?.IsConnected == true
+                                  && _sshClient.IsAlive()
                                   && TailFileRequested != null;
 
         // Single-selection (file or directory)
@@ -775,7 +797,7 @@ public partial class SftpFileBrowserView : UserControl
 
         // Single-directory-only operations — hide rather than disable; they're
         // contextually meaningless for files or multi-selection.
-        _menuProperties.IsVisible    = oneDir && _sshClient?.IsConnected == true;
+        _menuProperties.IsVisible    = oneDir && _sshClient.IsAlive();
         _menuBookmarkFolder.IsVisible = oneDir && _definition != null;
         _itemSeparator.IsVisible      = _menuProperties.IsVisible || _menuBookmarkFolder.IsVisible;
 
@@ -788,7 +810,7 @@ public partial class SftpFileBrowserView : UserControl
     {
         if (_filesGrid.SelectedItem is not SftpEntry entry || !entry.IsDirectory || entry.IsParentLink)
             return;
-        if (_sshClient == null || !_sshClient.IsConnected)
+        if (_sshClient == null || !_sshClient.IsAlive())
             return;
 
         var owner = TopLevel.GetTopLevel(this) as Window;
@@ -1111,7 +1133,7 @@ public partial class SftpFileBrowserView : UserControl
     {
         if (e.Key == Key.F5)
         {
-            Refresh();
+            RefreshAndRefitColumns();
             e.Handled = true;
         }
     }
@@ -1120,7 +1142,7 @@ public partial class SftpFileBrowserView : UserControl
     {
         if (e.Key == Key.F5)
         {
-            Refresh();
+            RefreshAndRefitColumns();
             e.Handled = true;
         }
         else if (e.Key == Key.Delete)
@@ -1281,27 +1303,30 @@ public partial class SftpFileBrowserView : UserControl
     // Column width persistence
     // -----------------------------------------------------------------------
 
-    private void RestoreColumnWidths()
+    // Text shown by each resizable column, for measuring content widths.
+    private static readonly Dictionary<string, Func<SftpEntry, string>> ColumnText = new()
     {
-        var saved = SettingsService.Temp.SftpColumnWidths;
-        // Remove any stale pixel-width entries for star-sized columns
-        foreach (var col in _filesGrid.Columns)
-            if (col.Width.IsStar && col.Header is string h)
-                saved.Remove(h);
+        ["Name"]        = e => e.Name,
+        ["Size"]        = e => e.SizeDisplay,
+        ["Modified"]    = e => e.ModifiedDisplay,
+        ["Permissions"] = e => e.Permissions,
+        ["Owner"]       = e => e.OwnerDisplay,
+        ["Group"]       = e => e.GroupDisplay,
+    };
 
-        // Clamp saved widths against the column's MinWidth so stale tiny values
-        // (e.g. from when Name was a star column and got saved as a near-zero pixel)
-        // don't make a column invisible.
-        foreach (var col in _filesGrid.Columns)
-        {
-            if (col.Width.IsStar) continue;
-            if (col.Header is not string header) continue;
-            if (!saved.TryGetValue(header, out var w) || w <= 0) continue;
-            var minW = col.MinWidth > 0 ? col.MinWidth : 30;
-            col.Width = new DataGridLength(Math.Max(w, minW));
-        }
-    }
+    private const double CellTextPadding   = 28;  // cell text margin (12 + 12) plus slack
+    private const double HeaderTextPadding = 32;  // header padding plus the sort glyph
+    private const double MaxAutoColumnWidth = 480; // one absurd file name shouldn't eat the view
+    private const int    MeasureSampleSize  = 25;  // longest strings measured per column
 
+    // Width this view last assigned to each column. An ActualWidth that differs from
+    // it can only come from the user dragging the column edge.
+    private readonly Dictionary<DataGridColumn, double> _appliedColumnWidths = new();
+
+    /// <summary>
+    /// Columns size to their content on every listing, except those the user resized
+    /// by hand — those keep the user's width (persisted) until Refresh resets them.
+    /// </summary>
     private void SubscribeColumnWidthPersistence()
     {
         // Debounce: save at most 500 ms after the last resize event
@@ -1309,15 +1334,16 @@ public partial class SftpFileBrowserView : UserControl
 
         foreach (var col in _filesGrid.Columns)
         {
-            // Don't persist the filler star column
-            if (col.Width.IsStar) continue;
+            if (col.Header is not string header || !ColumnText.ContainsKey(header)) continue;
 
             col.PropertyChanged += (_, args) =>
             {
                 if (args.Property.Name != nameof(col.ActualWidth)) return;
-                if (col.Header is not string header) return;
+                if (!_appliedColumnWidths.TryGetValue(col, out var applied)) return;
+                if (Math.Abs(col.ActualWidth - applied) < 1) return;
 
-                SettingsService.Temp.SftpColumnWidths[header] = col.ActualWidth;
+                _appliedColumnWidths[col] = col.ActualWidth;
+                SettingsService.Temp.SftpUserColumnWidths[header] = col.ActualWidth;
 
                 debounce?.Stop();
                 debounce = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background,
@@ -1325,6 +1351,56 @@ public partial class SftpFileBrowserView : UserControl
                 debounce.Start();
             };
         }
+    }
+
+    private void AutoFitColumns(IReadOnlyList<SftpEntry> entries)
+    {
+        var user = SettingsService.Temp.SftpUserColumnWidths;
+        foreach (var col in _filesGrid.Columns)
+        {
+            if (col.Header is not string header || !ColumnText.TryGetValue(header, out var text)) continue;
+
+            var minW = col.MinWidth > 0 ? col.MinWidth : 30;
+            double width = user.TryGetValue(header, out var w) && w > 0
+                ? w
+                : MeasureColumn(col, header, entries.Select(text));
+            width = Math.Max(width, minW);
+
+            _appliedColumnWidths[col] = width;
+            col.Width = new DataGridLength(width);
+        }
+    }
+
+    private double MeasureColumn(DataGridColumn col, string header, IEnumerable<string> values)
+    {
+        var family = col is DataGridTextColumn t && t.IsSet(DataGridTextColumn.FontFamilyProperty)
+            ? t.FontFamily
+            : _filesGrid.FontFamily;
+        var typeface = new Typeface(family);
+        var size = _filesGrid.FontSize;
+
+        double Measure(string s) => new FormattedText(s, System.Globalization.CultureInfo.CurrentUICulture,
+            FlowDirection.LeftToRight, typeface, size, Brushes.Black).WidthIncludingTrailingWhitespace;
+
+        // Proportional fonts make character count a proxy, not a measure — measuring
+        // the longest few strings is exact enough and keeps huge folders cheap.
+        double content = values
+            .Where(v => !string.IsNullOrEmpty(v))
+            .OrderByDescending(v => v.Length)
+            .Take(MeasureSampleSize)
+            .Select(Measure)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        return Math.Min(MaxAutoColumnWidth, Math.Max(content + CellTextPadding, Measure(header) + HeaderTextPadding));
+    }
+
+    /// <summary>Forgets hand-sized column widths so the next listing fits every column.</summary>
+    private void ResetColumnWidths()
+    {
+        if (SettingsService.Temp.SftpUserColumnWidths.Count == 0) return;
+        SettingsService.Temp.SftpUserColumnWidths.Clear();
+        SettingsService.SaveTemp();
     }
 
     // -----------------------------------------------------------------------
@@ -1396,7 +1472,7 @@ public partial class SftpFileBrowserView : UserControl
 
         // Internal drag (the drag originated from this same view) → treat as
         // a move, never show the big upload overlay.
-        bool isInternal = _internalDragSource != null;
+        bool isInternal = _internalDragSources != null;
         e.DragEffects = isInternal ? DragDropEffects.Move : DragDropEffects.Copy;
 
         var rowEntry = GetEntryUnderNameColumn(e.GetPosition(_filesGrid));
@@ -1419,51 +1495,74 @@ public partial class SftpFileBrowserView : UserControl
 
     /// <summary>
     /// Handles an internal SFTP drag-and-drop (a row was dragged within the same view).
-    /// Prompts the user for confirmation and renames (moves) the source on the server.
+    /// Prompts the user for confirmation and renames (moves) the sources on the server.
     /// </summary>
-    private async Task HandleInternalMoveAsync(SftpEntry src, string destDir)
+    private async Task HandleInternalMoveAsync(IReadOnlyList<SftpEntry> sources, string destDir)
     {
-        if (src.IsParentLink) return;
-
         var normalizedDest = destDir.TrimEnd('/');
         if (string.IsNullOrEmpty(normalizedDest)) normalizedDest = "/";
 
-        var srcParent = GetParentPath(src.FullPath);
-        if (srcParent == normalizedDest)
+        var toMove = new List<SftpEntry>();
+        string? skipReason = null;
+        foreach (var src in sources)
         {
-            SetStatus("Already in this folder.");
-            return;
+            if (src.IsParentLink) continue;
+
+            if (GetParentPath(src.FullPath) == normalizedDest)
+            {
+                skipReason ??= "Already in this folder.";
+                continue;
+            }
+
+            if (src.IsDirectory)
+            {
+                var srcPrefix = src.FullPath.TrimEnd('/') + "/";
+                if (normalizedDest == src.FullPath.TrimEnd('/') ||
+                    normalizedDest.StartsWith(srcPrefix, StringComparison.Ordinal))
+                {
+                    skipReason ??= $"Cannot move '{src.Name}' into itself.";
+                    continue;
+                }
+            }
+
+            toMove.Add(src);
         }
 
-        if (src.IsDirectory)
+        if (toMove.Count == 0)
         {
-            var srcPrefix = src.FullPath.TrimEnd('/') + "/";
-            if (normalizedDest == src.FullPath.TrimEnd('/') ||
-                normalizedDest.StartsWith(srcPrefix, StringComparison.Ordinal))
-            {
-                SetStatus($"Cannot move '{src.Name}' into itself.");
-                return;
-            }
+            if (skipReason != null) SetStatus(skipReason);
+            return;
         }
 
         var host = TopLevel.GetTopLevel(this) as Window;
         if (host == null) return;
 
-        var dialog = new MoveConfirmDialog(itemCount: 1, normalizedDest);
+        var dialog = new MoveConfirmDialog(itemCount: toMove.Count, normalizedDest);
         var confirmed = await dialog.ShowDialog<bool>(host);
         if (!confirmed) return;
 
-        var dstPath = normalizedDest.TrimEnd('/') + "/" + src.Name;
-        try
+        var failures = new List<string>();
+        foreach (var src in toMove)
         {
-            await Task.Run(() => _sftpClient.RenameFile(src.FullPath, dstPath));
-            Refresh();
-            SetStatus($"Moved '{src.Name}' to {normalizedDest}");
+            var dstPath = normalizedDest.TrimEnd('/') + "/" + src.Name;
+            try
+            {
+                await Task.Run(() => _sftpClient.RenameFile(src.FullPath, dstPath));
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{src.Name}: {ex.Message}");
+            }
         }
-        catch (Exception ex)
-        {
-            SetStatus($"Move failed: {ex.Message}");
-        }
+
+        Refresh();
+        int moved = toMove.Count - failures.Count;
+        if (failures.Count > 0)
+            SetStatus($"Move failed — {string.Join("; ", failures)}");
+        else
+            SetStatus(moved == 1
+                ? $"Moved '{toMove[0].Name}' to {normalizedDest}"
+                : $"Moved {moved} items to {normalizedDest}");
     }
 
     private async void OnMenuUploadFilesClicked(object? sender, RoutedEventArgs e)
@@ -1494,9 +1593,9 @@ public partial class SftpFileBrowserView : UserControl
         ClearUploadDragState();
 
         // Internal drag dropped back on this view → treat as a move, not an upload.
-        if (_internalDragSource is { } src)
+        if (_internalDragSources is { } sources)
         {
-            await HandleInternalMoveAsync(src, destDir);
+            await HandleInternalMoveAsync(sources, destDir);
             return;
         }
 
@@ -1743,6 +1842,8 @@ public partial class SftpFileBrowserView : UserControl
                             .OfType<DataGridRow>()
                             .FirstOrDefault(r =>
                             {
+                                // Recycled rows stay in the visual tree, hidden, with stale data.
+                                if (!r.IsVisible) return false;
                                 var bounds = r.TranslatePoint(new Point(0, 0), _filesGrid);
                                 if (bounds == null) return false;
                                 var rect = new Rect(bounds.Value, new Size(_filesGrid.Bounds.Width, r.Bounds.Height));
@@ -1768,6 +1869,8 @@ public partial class SftpFileBrowserView : UserControl
                             .OfType<DataGridRow>()
                             .FirstOrDefault(r =>
                             {
+                                // Recycled rows stay in the visual tree, hidden, with stale data.
+                                if (!r.IsVisible) return false;
                                 var bounds = r.TranslatePoint(new Point(0, 0), _filesGrid);
                                 if (bounds == null) return false;
                                 var rect = new Rect(bounds.Value, new Size(_filesGrid.Bounds.Width, r.Bounds.Height));
@@ -1778,6 +1881,12 @@ public partial class SftpFileBrowserView : UserControl
             return entry;
 
         return null;
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); }
+        catch (Exception ex) { Log.Warn("sftp", $"Could not remove drag-out temp {path}: {ex.Message}"); }
     }
 
     private static string GetParentPath(string path)
@@ -1820,9 +1929,14 @@ public partial class SftpFileBrowserView : UserControl
         _dragOutPending     = null;
         _dragOutPointerArgs = null;
         _clickedSoleSelectedItem = false;
+        _collapseSelectionOnRelease = null;
 
         var point = e.GetCurrentPoint(_filesGrid);
         if (!point.Properties.IsLeftButtonPressed) return;
+
+        // The second press of a double-click opens the row (navigating into a folder);
+        // a slight wobble before release must not turn that into a drag of it.
+        if (e.ClickCount > 1) return;
 
         var dragPos = e.GetPosition(_filesGrid);
         var entry   = GetEntryUnderPointer(dragPos);
@@ -1842,14 +1956,30 @@ public partial class SftpFileBrowserView : UserControl
         {
             _clickedSoleSelectedItem = true;
         }
+
+        // Bare press inside a multi-selection: keep the grid from collapsing the
+        // selection now, so the whole selection can be dragged. The grid never sees
+        // this press, so take the capture and focus it would have taken.
+        if (e.KeyModifiers == KeyModifiers.None
+            && _filesGrid.SelectedItems is { Count: > 1 } multi
+            && multi.Contains(entry))
+        {
+            _collapseSelectionOnRelease = entry;
+            e.Pointer.Capture(_filesGrid);
+            _filesGrid.Focus();
+            e.Handled = true;
+        }
     }
 
     private void OnFilesGridPointerMoved(object? sender, PointerEventArgs e)
     {
         if (_dragOutPending == null || _dragOutInProgress) return;
 
+        // A press arms the drag only for as long as the grid holds the pointer capture.
+        // If the release landed elsewhere (e.g. on a window a double-click opened), the
+        // armed state is stale and a later press-and-move anywhere must not revive it.
         var point = e.GetCurrentPoint(_filesGrid);
-        if (!point.Properties.IsLeftButtonPressed)
+        if (!point.Properties.IsLeftButtonPressed || !IsCapturedByGrid(e.Pointer))
         {
             _dragOutPending     = null;
             _dragOutPointerArgs = null;
@@ -1861,16 +1991,25 @@ public partial class SftpFileBrowserView : UserControl
         var dy   = pos.Y - _dragOutStartPos.Y;
         if (Math.Sqrt(dx * dx + dy * dy) < DragThresholdPx) return;
 
-        // Threshold exceeded — start the drag
+        // Threshold exceeded — start the drag. Dragging a selected row drags the whole
+        // selection; otherwise just the row under the press.
         var entry           = _dragOutPending;
         var pressedArgs     = _dragOutPointerArgs;
         _dragOutPending     = null;
         _dragOutPointerArgs = null;
+        _collapseSelectionOnRelease = null;
         _dragOutInProgress  = true;
         _dragOutReleased    = false;
 
-        _ = InitiateDragDownloadAsync(entry, pressedArgs ?? throw new InvalidOperationException("Pressed event args missing"));
+        IReadOnlyList<SftpEntry> entries = [entry];
+        if (_filesGrid.SelectedItems is { Count: > 1 } sel && sel.Contains(entry))
+            entries = sel.OfType<SftpEntry>().Where(i => !i.IsParentLink).ToList();
+
+        _ = InitiateDragDownloadAsync(entries, pressedArgs ?? throw new InvalidOperationException("Pressed event args missing"));
     }
+
+    private bool IsCapturedByGrid(IPointer pointer)
+        => pointer.Captured is Visual v && (v == _filesGrid || _filesGrid.IsVisualAncestorOf(v));
 
     private void OnFilesGridPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
@@ -1880,7 +2019,10 @@ public partial class SftpFileBrowserView : UserControl
         // A release while it is still preparing abandons the drag: the press event it
         // holds would otherwise still report the button as down.
         if (_dragOutInProgress)
+        {
             _dragOutReleased = true;
+            _dragOutCts?.Cancel();
+        }
 
         // Toggle-off: bare click landed on the already-sole-selected row and the
         // user didn't drag → clear the selection. Skipped while a drag-out is
@@ -1890,34 +2032,50 @@ public partial class SftpFileBrowserView : UserControl
             _filesGrid.SelectedItems?.Clear();
         }
         _clickedSoleSelectedItem = false;
+
+        // Press inside a multi-selection that didn't become a drag: now act as the
+        // plain click it was. We took the capture on press, so give it back.
+        if (_collapseSelectionOnRelease is { } only)
+        {
+            _collapseSelectionOnRelease = null;
+            if (IsCapturedByGrid(e.Pointer)) e.Pointer.Capture(null);
+            if (!_dragOutInProgress)
+            {
+                _filesGrid.SelectedItems?.Clear();
+                _filesGrid.SelectedItem = only;
+            }
+        }
     }
 
-    private async Task InitiateDragDownloadAsync(SftpEntry entry, PointerPressedEventArgs pointerArgs)
+    private async Task InitiateDragDownloadAsync(IReadOnlyList<SftpEntry> entries, PointerPressedEventArgs pointerArgs)
     {
-        _internalDragSource = entry;
+        if (entries.Count == 0) { _dragOutInProgress = false; return; }
+        _internalDragSources = entries;
+        bool anyDirectory = entries.Any(en => en.IsDirectory);
+        string what = entries.Count == 1 ? entries[0].FullPath : $"{entries.Count} items in {_currentPath}";
         try
         {
             // Windows fast path: a virtual-file (delayed-rendering) drag. The file's
             // bytes are pulled from SFTP only when the drop target asks for them — i.e.
             // on DROP — so the app doesn't freeze pre-downloading while the mouse is
-            // held. Single files only; directories fall through to the pre-download
-            // path below. DoDragDrop blocks (pumping messages) until the drag ends.
-            if (OperatingSystem.IsWindows() && !entry.IsDirectory)
+            // held. Files only; a selection with a directory falls through to the
+            // pre-download path below. DoDragDrop blocks (pumping messages) until the drag ends.
+            if (OperatingSystem.IsWindows() && !anyDirectory)
             {
                 bool started = false;
                 try
                 {
-                    var remotePath = entry.FullPath;
-                    started = WindowsFileDrag.TryDrag(entry.Name, entry.Size, () =>
+                    var files = entries.Select(en => (en.Name, en.Size)).ToList();
+                    started = WindowsFileDrag.TryDrag(files, index =>
                     {
                         using var ms = new MemoryStream();
-                        _sftpClient.DownloadFile(remotePath, ms);
+                        _sftpClient.DownloadFile(entries[index].FullPath, ms);
                         return ms.ToArray();
                     });
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[SFTP] native drag failed, falling back: {ex.Message}");
+                    Log.Warn("sftp", $"native drag failed, falling back: {ex.Message}");
                     started = false;
                 }
                 if (started) return;
@@ -1925,31 +2083,50 @@ public partial class SftpFileBrowserView : UserControl
 
             // Folder drag-out on Windows would pre-download the whole tree while the mouse
             // is held, with no chance to confirm. Route it through Download to…, which does.
-            if (OperatingSystem.IsWindows() && entry.IsDirectory)
+            if (OperatingSystem.IsWindows() && anyDirectory)
             {
                 SetStatus("Dragging folders out isn't supported — right-click → Download to… instead.");
                 return;
             }
 
             SetStatus("Preparing download…");
+            Log.Info("sftp", $"Drag-out started: {what}{(anyDirectory ? " (with folders)" : "")}");
 
-            // Download to a per-entry temp directory so the OS gets a real local file path
+            // Download to a per-drag temp directory so the OS gets real local file paths.
+            // The entries all come from one listing, so their names can't collide there.
             var sessionTemp = Path.Combine(DragOutTempRoot, Guid.NewGuid().ToString("N"));
+            using var cts = new CancellationTokenSource();
+            _dragOutCts = cts;
+            if (_dragOutReleased) cts.Cancel();
 
-            string localPath;
+            List<string> localPaths;
             try
             {
-                localPath = await Task.Run(() =>
+                localPaths = await Task.Run(() =>
                 {
                     Directory.CreateDirectory(sessionTemp);
-                    return DownloadToTempSync(entry, sessionTemp,
-                        msg => Dispatcher.UIThread.Post(() => SetStatus(msg)));
+                    return entries.Select(en => DownloadToTempSync(en, sessionTemp,
+                        msg => Dispatcher.UIThread.Post(() => { if (!cts.IsCancellationRequested) SetStatus(msg); }),
+                        cts.Token)).ToList();
                 });
+            }
+            catch (OperationCanceledException)
+            {
+                Log.Info("sftp", $"Drag-out of {what} cancelled (button released while preparing)");
+                SetStatus(null);
+                TryDeleteDirectory(sessionTemp);
+                return;
             }
             catch (Exception ex)
             {
+                Log.Warn("sftp", $"Drag-out download of {what} failed", ex);
                 SetStatus($"Drag-out download failed: {ex.Message}");
+                TryDeleteDirectory(sessionTemp);
                 return;
+            }
+            finally
+            {
+                _dragOutCts = null;
             }
 
             SetStatus(null);
@@ -1957,7 +2134,10 @@ public partial class SftpFileBrowserView : UserControl
             // The button was released while the download was being prepared: a drag
             // started now would drop immediately, wherever the cursor happens to be.
             if (_dragOutReleased)
+            {
+                TryDeleteDirectory(sessionTemp);
                 return;
+            }
 
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel is null) return;
@@ -1965,18 +2145,28 @@ public partial class SftpFileBrowserView : UserControl
             // Directories resolve via TryGetFolderFromPathAsync — TryGetFileFromPathAsync
             // returns null for a folder, which previously made folder drag-out silently
             // do nothing after the tree had already been downloaded to temp.
-            IStorageItem? storageItem = entry.IsDirectory
-                ? await topLevel.StorageProvider.TryGetFolderFromPathAsync(new Uri(localPath))
-                : await topLevel.StorageProvider.TryGetFileFromPathAsync(new Uri(localPath));
-            if (storageItem is null) return;
-
             var transfer = new DataTransfer();
-            transfer.Add(DataTransferItem.CreateFile(storageItem));
-            await DragDrop.DoDragDropAsync(pointerArgs, transfer, DragDropEffects.Copy);
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var localUri = new Uri(localPaths[i]);
+                IStorageItem? storageItem = entries[i].IsDirectory
+                    ? await topLevel.StorageProvider.TryGetFolderFromPathAsync(localUri)
+                    : await topLevel.StorageProvider.TryGetFileFromPathAsync(localUri);
+                if (storageItem is null)
+                {
+                    Log.Warn("sftp", $"Drag-out: no storage item for {localPaths[i]}");
+                    continue;
+                }
+                transfer.Add(DataTransferItem.CreateFile(storageItem));
+            }
+            if (transfer.Items.Count == 0) return;
+
+            var effect = await DragDrop.DoDragDropAsync(pointerArgs, transfer, DragDropEffects.Copy);
+            Log.Info("sftp", $"Drag-out of {what} finished: {effect}");
         }
         finally
         {
-            _internalDragSource = null;
+            _internalDragSources = null;
             _dragOutInProgress = false;
         }
     }
@@ -1988,8 +2178,9 @@ public partial class SftpFileBrowserView : UserControl
     /// with a human-readable status string as each file is fetched (marshal to the UI
     /// thread inside the callback).
     /// </summary>
-    private string DownloadToTempSync(SftpEntry entry, string destDir, Action<string>? onProgress)
+    private string DownloadToTempSync(SftpEntry entry, string destDir, Action<string>? onProgress, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var localPath = Path.Combine(destDir, entry.Name);
 
         if (entry.IsDirectory)
@@ -2005,14 +2196,14 @@ public partial class SftpFileBrowserView : UserControl
                     FullPath    = child.FullName,
                     Size        = child.Length,
                 };
-                DownloadToTempSync(childEntry, localPath, onProgress);
+                DownloadToTempSync(childEntry, localPath, onProgress, ct);
             }
         }
         else
         {
             onProgress?.Invoke($"Preparing “{entry.Name}” for drag…");
             using var fs = File.Create(localPath);
-            _sftpClient.DownloadFile(entry.FullPath, fs);
+            _sftpClient.DownloadFileAsync(entry.FullPath, fs, ct).GetAwaiter().GetResult();
         }
 
         return localPath;

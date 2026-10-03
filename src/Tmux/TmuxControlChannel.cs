@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using Renci.SshNet;
 using TermThing.Ssh;
+using TermThing.Diagnostics;
 
 namespace TermThing.Tmux;
 
@@ -107,8 +108,8 @@ public sealed class TmuxControlChannel : IDisposable
     public void Post(string command) =>
         SendAsync(command).ContinueWith(t =>
         {
-            if (t.IsFaulted) Debug.WriteLine($"[tmux] '{command}' failed: {t.Exception?.GetBaseException().Message}");
-            else if (!t.Result.Success) Debug.WriteLine($"[tmux] '{command}': {t.Result.Text}");
+            if (t.IsFaulted) Log.Warn("tmux", $"'{command}' failed: {t.Exception?.GetBaseException().Message}");
+            else if (!t.Result.Success) Log.Warn("tmux", $"'{command}': {t.Result.Text}");
         }, TaskScheduler.Default);
 
     // -----------------------------------------------------------------------
@@ -175,7 +176,7 @@ public sealed class TmuxControlChannel : IDisposable
         if (block is null && TmuxControlProtocol.TryParseOutput(raw, out var paneId, out var data))
         {
             try { Output?.Invoke(paneId, data); }
-            catch (Exception ex) { Debug.WriteLine($"[tmux] output handler failed: {ex}"); }
+            catch (Exception ex) { Log.Warn("tmux", "output handler failed", ex); }
             return;
         }
 
@@ -206,7 +207,7 @@ public sealed class TmuxControlChannel : IDisposable
         {
             if (n.Name == "exit") _exitReason = n.Rest.Length > 0 ? n.Rest : "the session was closed or this client was detached";
             try { Notification?.Invoke(n); }
-            catch (Exception ex) { Debug.WriteLine($"[tmux] notification handler failed: {ex}"); }
+            catch (Exception ex) { Log.Warn("tmux", "notification handler failed", ex); }
         }
     }
 

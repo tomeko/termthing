@@ -13,6 +13,7 @@ using TermThing.Panes;
 using TermThing.Ssh;
 using TermThing.Tmux;
 using TermThing.Views;
+using TermThing.Diagnostics;
 
 namespace TermThing.Sessions.Launchers;
 
@@ -157,7 +158,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
 
             proxyTransport = await ProxyCommandTransport.StartAsync(
                 settings.ProxyCommand, settings.Host, settings.Port, effectiveUsername, cancellationToken);
-            Debug.WriteLine($"[SSH] ProxyCommand listening on {proxyTransport.LoopbackEndpoint}: {proxyTransport.ResolvedCommand}");
+            Log.Info("ssh", $"ProxyCommand listening on {proxyTransport.LoopbackEndpoint}: {proxyTransport.ResolvedCommand}");
         }
 
         SshClient client;
@@ -195,7 +196,8 @@ public sealed class SshSessionLauncher : ISessionLauncher
                 try { client.Connect(); }
                 catch (Exception ex) { firstConnectError = ex; }
             }, cancellationToken);
-            Debug.WriteLine($"[SSH] Connect: {connectSw.ElapsedMilliseconds}ms  kex={connectionInfo.CurrentKeyExchangeAlgorithm}  cipher={connectionInfo.CurrentServerEncryption}");
+            if (firstConnectError is null)
+                Log.Info("ssh", $"Connected {settings.Username}@{settings.Host}:{settings.Port}: {connectSw.ElapsedMilliseconds}ms  kex={connectionInfo.CurrentKeyExchangeAlgorithm}  cipher={connectionInfo.CurrentServerEncryption}");
 
             // Only swallow the connect failure when it was caused by an untrusted host
             // key (so we can show the prompt and retry). Anything else — auth failure,
@@ -205,7 +207,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             {
                 client.Dispose();
                 if (proxyTransport is not null) { await proxyTransport.DisposeAsync(); proxyTransport = null; }
-                Debug.WriteLine($"[SSH] Connect failed: {firstConnectError.GetType().Name}: {firstConnectError.Message}");
+                Log.Warn("ssh", $"Connect to {settings.Host}:{settings.Port} failed: {firstConnectError.GetType().Name}: {firstConnectError.Message}");
                 throw EnrichAuthException(firstConnectError, settings);
             }
 
@@ -213,6 +215,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             {
                 var action = await promptHost.PromptHostKeyAsync(settings.Host, settings.Port,
                     pendingStatus!.Value, pendingKeyArgs);
+                Log.Info("ssh", $"Host key for {settings.Host}:{settings.Port} was {pendingStatus.Value}; user chose {action}");
 
                 if (action == HostKeyAction.Cancel)
                 {
@@ -233,7 +236,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
                     await proxyTransport.DisposeAsync();
                     proxyTransport = await ProxyCommandTransport.StartAsync(
                         settings.ProxyCommand!, settings.Host, settings.Port, effectiveUsername, cancellationToken);
-                    Debug.WriteLine($"[SSH] ProxyCommand restarted on {proxyTransport.LoopbackEndpoint} for host-key retry.");
+                    Log.Info("ssh", $"ProxyCommand restarted on {proxyTransport.LoopbackEndpoint} for host-key retry.");
                     connectionInfo = SshConnectionInfoFactory.Build(
                         proxyTransport.LoopbackEndpoint.Address.ToString(),
                         proxyTransport.LoopbackEndpoint.Port,
@@ -251,7 +254,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
                 {
                     client.Dispose();
                     if (proxyTransport is not null) { await proxyTransport.DisposeAsync(); proxyTransport = null; }
-                    Debug.WriteLine($"[SSH] Retry connect after host-key trust failed: {ex.GetType().Name}: {ex.Message}");
+                    Log.Warn("ssh", $"Retry connect after host-key trust failed: {ex.GetType().Name}: {ex.Message}");
                     throw EnrichAuthException(ex, settings);
                 }
             }
@@ -261,7 +264,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             // --- Jump-host path ---
             chainResult = await SshChainConnector.ConnectAsync(
                 hops, settings, _knownHosts, promptHost,
-                progress: msg => Debug.WriteLine($"[SSH jump] {msg}"),
+                progress: msg => Log.Info("ssh-jump", msg),
                 cancellationToken: cancellationToken);
             client = chainResult.FinalClient;
         }
@@ -396,7 +399,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
                     if (t.Exception is { } ex)
                     {
                         var inner = ex.GetBaseException();
-                        Debug.WriteLine($"[SSH] CompleteConnectionAsync failed: {inner.GetType().Name}: {inner.Message}");
+                        Log.Warn("ssh", $"CompleteConnectionAsync failed: {inner.GetType().Name}: {inner.Message}");
                         Dispatcher.UIThread.Post(() =>
                         {
                             try
@@ -542,6 +545,7 @@ internal sealed class SshSessionInstance : ISessionInstance
 
     private readonly Dictionary<string, LogTailWindow> _tailWindows = new(); // keyed by source ("file:<path>", "docker:<id>")
     private bool _connectionEnded;
+    private volatile bool _killed;
     private int _sessionEndedFired; // Interlocked guard — ensures SessionEnded fires at most once
     private SshPtyConnection? _connection; // the first pane's; owned by us: an attached connection is never disposed by the terminal
 
@@ -677,7 +681,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         // Navigate to the remote home directory once the SFTP handshake completes.
         conn.ConnectTask.ContinueWith(_ =>
         {
-            if (!conn.Client.IsConnected) return;
+            if (!conn.Client.IsAlive()) return;
             var homeDir = conn.Client.WorkingDirectory;
             Dispatcher.UIThread.Post(() => view.NavigateTo(homeDir));
         }, TaskScheduler.Default);
@@ -834,7 +838,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         if (_connectionEnded || Interlocked.Exchange(ref _tmuxPolling, 1) == 1) return;
         try
         {
-            if (!_client.IsConnected) return;
+            if (!_client.IsAlive()) return;
             if (!_tmuxProbed)
             {
                 _tmuxProbed = true;
@@ -844,7 +848,7 @@ internal sealed class SshSessionInstance : ISessionInstance
             else if (_tmuxVersion is null) { _tmuxTimer?.Dispose(); return; }
             var own = TmuxClient.FindOwnClient(_client);
             // Keep the last known session across a poll that ran into the drop itself.
-            if (!_connectionEnded && _client.IsConnected) SetTmuxOwn(own);
+            if (!_connectionEnded && _client.IsAlive()) SetTmuxOwn(own);
         }
         catch { /* connection going away; the next poll or SessionEnded settles it */ }
         finally { Interlocked.Exchange(ref _tmuxPolling, 0); }
@@ -866,7 +870,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         bool inTmux = _tmuxControl is not null;
         var state = await Task.Run(() =>
         {
-            if (_connectionEnded || !_client.IsConnected) return new TmuxMenuState(null, [], null);
+            if (_connectionEnded || !_client.IsAlive()) return new TmuxMenuState(null, [], null);
             try
             {
                 if (!_tmuxProbed) { _tmuxProbed = true; _tmuxVersion = TmuxClient.Probe(_client); }
@@ -972,7 +976,7 @@ internal sealed class SshSessionInstance : ISessionInstance
     {
         if (_tmuxControl is not { } control) return;
         try { await control.StartAsync(); }
-        catch (Exception ex) when (fallbackToShell && _client.IsConnected)
+        catch (Exception ex) when (fallbackToShell && _client.IsAlive())
         {
             LeaveTmux(control, $"tmux: couldn't open session '{control.SessionName}' ({ex.Message}). Showing a shell instead.");
         }
@@ -990,7 +994,7 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     internal async Task<string?> EnterTmuxAsync(string session)
     {
-        if (_connectionEnded || !_client.IsConnected) return "Session is disconnected.";
+        if (_connectionEnded || !_client.IsAlive()) return "Session is disconnected.";
         if (_tmuxControl is { } current)
         {
             if (current.SessionName != session) current.SwitchSession(session);
@@ -1082,9 +1086,9 @@ internal sealed class SshSessionInstance : ISessionInstance
     private void OnTmuxControlEnded(TmuxControlSession control, string? reason)
     {
         if (!ReferenceEquals(_tmuxControl, control)) return;
-        if (!control.EndedByTmux || !_client.IsConnected)
+        if (!control.EndedByTmux || !_client.IsAlive())
         {
-            if (_client.IsConnected && !string.IsNullOrEmpty(reason)) EndMessage = "tmux: " + reason;
+            if (_client.IsAlive() && !string.IsNullOrEmpty(reason)) EndMessage = "tmux: " + reason;
             FireSessionEnded();
             return;
         }
@@ -1171,7 +1175,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[SSH] shell after tmux failed: {ex.Message}");
+            Log.Warn("ssh", $"shell after tmux failed: {ex.Message}");
             FireSessionEnded();
         }
     }
@@ -1269,7 +1273,10 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     private void OnPaneEnded(TerminalControl tc, SshPtyConnection connection)
     {
-        if (connection.ClosedByError || !_client.IsConnected)
+        // Kill() tears every pane down on purpose (tab/app close) — that is not a
+        // session ending, and the client it would inspect is already disposed.
+        if (_killed) return;
+        if (connection.ClosedByError || !_client.IsAlive())
         {
             FireSessionEnded();
             return;
@@ -1334,7 +1341,7 @@ internal sealed class SshSessionInstance : ISessionInstance
     /// </summary>
     private async void SplitPane(SplitAxis axis)
     {
-        if (_connectionEnded || !_client.IsConnected || _definition is null || _panes is null) return;
+        if (_connectionEnded || !_client.IsAlive() || _definition is null || _panes is null) return;
         var startIn = Terminal?.CurrentDirectory;
 
         var tc = TerminalFactory.Create(_definition, _saveConfig);
@@ -1377,7 +1384,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[SSH] split pane failed: {ex.Message}");
+            Log.Warn("ssh", $"split pane failed: {ex.Message}");
             try { tc.Terminal?.Write($"\r\n\u001b[1;31mCould not open a shell: {ex.Message}\u001b[0m\r\n"); } catch { }
         }
     }
@@ -1496,14 +1503,14 @@ internal sealed class SshSessionInstance : ISessionInstance
 
     private void OpenTailWindow(string remotePath)
     {
-        if (_connectionEnded || !_client.IsConnected) return;
+        if (_connectionEnded || !_client.IsAlive()) return;
         ShowTailWindow("file:" + remotePath,
             () => new LogTailWindow(new SshTailLogSource(_client, remotePath), remotePath));
     }
 
     private void OpenDockerLogsWindow(string containerId, string name)
     {
-        if (_connectionEnded || !_client.IsConnected) return;
+        if (_connectionEnded || !_client.IsAlive()) return;
         var shortId = containerId.Length > 12 ? containerId[..12] : containerId;
         var label = $"docker:{name} ({shortId})";
         ShowTailWindow("docker:" + containerId,
@@ -1544,6 +1551,8 @@ internal sealed class SshSessionInstance : ISessionInstance
 
     public void Kill()
     {
+        _killed = true;
+        _connectionEnded = true;
         // Stop pollers and close tail windows first so background exec channels
         // don't try to read from a torn-down client.
         try { _tmuxTimer?.Dispose();       } catch { }
@@ -1557,7 +1566,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         _tailWindows.Clear();
 
         // 1. Disconnect the final-target SSH client — tears down the shell stream.
-        try { if (_client.IsConnected) _client.Disconnect(); } catch { }
+        try { if (_client.IsAlive()) _client.Disconnect(); } catch { }
         try { _client.Dispose(); } catch { }
         // SFTP client + its forward + its ProxyCommand transport (if any).
         _ = DisposeSftpConnectionAsync(_sftpConnection);
@@ -1572,7 +1581,7 @@ internal sealed class SshSessionInstance : ISessionInstance
             }
             for (int i = _chain.JumpClients.Count - 1; i >= 0; i--)
             {
-                try { if (_chain.JumpClients[i].IsConnected) _chain.JumpClients[i].Disconnect(); } catch { }
+                try { if (_chain.JumpClients[i].IsAlive()) _chain.JumpClients[i].Disconnect(); } catch { }
                 try { _chain.JumpClients[i].Dispose(); } catch { }
             }
         }

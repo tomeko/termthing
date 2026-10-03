@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Net;
 using TermThing.Sessions;
 using TermThing.Views;
+using TermThing.Diagnostics;
 
 namespace TermThing.Ssh;
 
@@ -105,7 +106,7 @@ internal static class SshChainConnector
                 clients.Add(hopClient);
                 parentClient = hopClient;
 
-                Debug.WriteLine($"[SSH jump] Hop {i + 1}/{hops.Count} ({hop.DisplayName}): {sw.ElapsedMilliseconds} ms");
+                Log.Info("ssh-jump", $"Hop {i + 1}/{hops.Count} ({hop.DisplayName}): {sw.ElapsedMilliseconds} ms");
             }
 
             // ----------------------------------------------------------------
@@ -153,7 +154,7 @@ internal static class SshChainConnector
             }
             for (int i = clients.Count - 1; i >= 0; i--)
             {
-                try { if (clients[i].IsConnected) clients[i].Disconnect(); } catch { }
+                try { if (clients[i].IsAlive()) clients[i].Disconnect(); } catch { }
                 try { clients[i].Dispose(); } catch { }
             }
             throw;
@@ -221,7 +222,7 @@ internal static class SshChainConnector
             await Task.Run(() => client.Connect(), ct);
         }
 
-        if (!client.IsConnected)
+        if (!client.IsAlive())
         {
             client.Dispose();
             throw new Exception($"Failed to connect to {logicalHost}:{logicalPort}.");
