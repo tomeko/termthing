@@ -163,6 +163,7 @@ public partial class SftpFileBrowserView : UserControl
     private PointerPressedEventArgs? _dragOutPointerArgs;
     private bool _dragOutInProgress;
     private bool _dragOutReleased;       // button released while a drag-out was still preparing
+    private CancellationTokenSource? _dragOutCts; // cancels the pre-download when the drag is abandoned
 
     // Where drag-out stages files for the OS. Anything dropped from here is our own
     // drag coming back, never something the user meant to upload.
@@ -348,6 +349,9 @@ public partial class SftpFileBrowserView : UserControl
 
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
+                _dragOutPending     = null;
+                _dragOutPointerArgs = null;
+
                 var listing = new List<SftpEntry>(files.Count + 1);
                 if (path != "/")
                     listing.Add(new SftpEntry
@@ -1744,6 +1748,8 @@ public partial class SftpFileBrowserView : UserControl
                             .OfType<DataGridRow>()
                             .FirstOrDefault(r =>
                             {
+                                // Recycled rows stay in the visual tree, hidden, with stale data.
+                                if (!r.IsVisible) return false;
                                 var bounds = r.TranslatePoint(new Point(0, 0), _filesGrid);
                                 if (bounds == null) return false;
                                 var rect = new Rect(bounds.Value, new Size(_filesGrid.Bounds.Width, r.Bounds.Height));
@@ -1769,6 +1775,8 @@ public partial class SftpFileBrowserView : UserControl
                             .OfType<DataGridRow>()
                             .FirstOrDefault(r =>
                             {
+                                // Recycled rows stay in the visual tree, hidden, with stale data.
+                                if (!r.IsVisible) return false;
                                 var bounds = r.TranslatePoint(new Point(0, 0), _filesGrid);
                                 if (bounds == null) return false;
                                 var rect = new Rect(bounds.Value, new Size(_filesGrid.Bounds.Width, r.Bounds.Height));
@@ -1779,6 +1787,12 @@ public partial class SftpFileBrowserView : UserControl
             return entry;
 
         return null;
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); }
+        catch (Exception ex) { Log.Warn("sftp", $"Could not remove drag-out temp {path}: {ex.Message}"); }
     }
 
     private static string GetParentPath(string path)
@@ -1825,6 +1839,10 @@ public partial class SftpFileBrowserView : UserControl
         var point = e.GetCurrentPoint(_filesGrid);
         if (!point.Properties.IsLeftButtonPressed) return;
 
+        // The second press of a double-click opens the row (navigating into a folder);
+        // a slight wobble before release must not turn that into a drag of it.
+        if (e.ClickCount > 1) return;
+
         var dragPos = e.GetPosition(_filesGrid);
         var entry   = GetEntryUnderPointer(dragPos);
         if (entry == null) return;
@@ -1849,8 +1867,11 @@ public partial class SftpFileBrowserView : UserControl
     {
         if (_dragOutPending == null || _dragOutInProgress) return;
 
+        // A press arms the drag only for as long as the grid holds the pointer capture.
+        // If the release landed elsewhere (e.g. on a window a double-click opened), the
+        // armed state is stale and a later press-and-move anywhere must not revive it.
         var point = e.GetCurrentPoint(_filesGrid);
-        if (!point.Properties.IsLeftButtonPressed)
+        if (!point.Properties.IsLeftButtonPressed || !IsCapturedByGrid(e.Pointer))
         {
             _dragOutPending     = null;
             _dragOutPointerArgs = null;
@@ -1873,6 +1894,9 @@ public partial class SftpFileBrowserView : UserControl
         _ = InitiateDragDownloadAsync(entry, pressedArgs ?? throw new InvalidOperationException("Pressed event args missing"));
     }
 
+    private bool IsCapturedByGrid(IPointer pointer)
+        => pointer.Captured is Visual v && (v == _filesGrid || _filesGrid.IsVisualAncestorOf(v));
+
     private void OnFilesGridPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
         _dragOutPending     = null;
@@ -1881,7 +1905,10 @@ public partial class SftpFileBrowserView : UserControl
         // A release while it is still preparing abandons the drag: the press event it
         // holds would otherwise still report the button as down.
         if (_dragOutInProgress)
+        {
             _dragOutReleased = true;
+            _dragOutCts?.Cancel();
+        }
 
         // Toggle-off: bare click landed on the already-sole-selected row and the
         // user didn't drag → clear the selection. Skipped while a drag-out is
@@ -1933,9 +1960,13 @@ public partial class SftpFileBrowserView : UserControl
             }
 
             SetStatus("Preparing download…");
+            Log.Info("sftp", $"Drag-out started: {entry.FullPath}{(entry.IsDirectory ? " (folder)" : "")}");
 
             // Download to a per-entry temp directory so the OS gets a real local file path
             var sessionTemp = Path.Combine(DragOutTempRoot, Guid.NewGuid().ToString("N"));
+            using var cts = new CancellationTokenSource();
+            _dragOutCts = cts;
+            if (_dragOutReleased) cts.Cancel();
 
             string localPath;
             try
@@ -1944,14 +1975,27 @@ public partial class SftpFileBrowserView : UserControl
                 {
                     Directory.CreateDirectory(sessionTemp);
                     return DownloadToTempSync(entry, sessionTemp,
-                        msg => Dispatcher.UIThread.Post(() => SetStatus(msg)));
+                        msg => Dispatcher.UIThread.Post(() => { if (!cts.IsCancellationRequested) SetStatus(msg); }),
+                        cts.Token);
                 });
+            }
+            catch (OperationCanceledException)
+            {
+                Log.Info("sftp", $"Drag-out of {entry.FullPath} cancelled (button released while preparing)");
+                SetStatus(null);
+                TryDeleteDirectory(sessionTemp);
+                return;
             }
             catch (Exception ex)
             {
                 Log.Warn("sftp", $"Drag-out download of {entry.FullPath} failed", ex);
                 SetStatus($"Drag-out download failed: {ex.Message}");
+                TryDeleteDirectory(sessionTemp);
                 return;
+            }
+            finally
+            {
+                _dragOutCts = null;
             }
 
             SetStatus(null);
@@ -1959,7 +2003,10 @@ public partial class SftpFileBrowserView : UserControl
             // The button was released while the download was being prepared: a drag
             // started now would drop immediately, wherever the cursor happens to be.
             if (_dragOutReleased)
+            {
+                TryDeleteDirectory(sessionTemp);
                 return;
+            }
 
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel is null) return;
@@ -1991,8 +2038,9 @@ public partial class SftpFileBrowserView : UserControl
     /// with a human-readable status string as each file is fetched (marshal to the UI
     /// thread inside the callback).
     /// </summary>
-    private string DownloadToTempSync(SftpEntry entry, string destDir, Action<string>? onProgress)
+    private string DownloadToTempSync(SftpEntry entry, string destDir, Action<string>? onProgress, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var localPath = Path.Combine(destDir, entry.Name);
 
         if (entry.IsDirectory)
@@ -2008,14 +2056,14 @@ public partial class SftpFileBrowserView : UserControl
                     FullPath    = child.FullName,
                     Size        = child.Length,
                 };
-                DownloadToTempSync(childEntry, localPath, onProgress);
+                DownloadToTempSync(childEntry, localPath, onProgress, ct);
             }
         }
         else
         {
             onProgress?.Invoke($"Preparing “{entry.Name}” for drag…");
             using var fs = File.Create(localPath);
-            _sftpClient.DownloadFile(entry.FullPath, fs);
+            _sftpClient.DownloadFileAsync(entry.FullPath, fs, ct).GetAwaiter().GetResult();
         }
 
         return localPath;
