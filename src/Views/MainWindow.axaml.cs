@@ -69,6 +69,9 @@ public partial class MainWindow : Window, ISessionPromptHost
         public TmuxBadge? FloatingBadge { get; set; }
     }
 
+    // Floating sessions in the order they were popped out (drives the header chips).
+    private readonly List<TabState> _floatingOrder = new();
+
     // Tab drag-and-drop state
     private TabItem? _tabDragCandidate;
     private Point    _tabDragStartPos;
@@ -1853,6 +1856,8 @@ public partial class MainWindow : Window, ISessionPromptHost
         {
             state.FloatingWindow.ForceClose();
             state.FloatingWindow = null;
+            _floatingOrder.Remove(state);
+            RefreshFloatingStrip();
         }
 
         TerminalTabs.Items.Remove(tab);
@@ -1926,7 +1931,8 @@ public partial class MainWindow : Window, ISessionPromptHost
             (anchor, placement) => OpenTabMenu(state, anchor, placement),
             () => state.Instance?.Panes,
             () => (state.Instance as SshSessionInstance)?.DetachTmux(),
-            state.FloatingBadge = state.Badge is null ? null : NewFloatingBadge(state))
+            state.FloatingBadge = state.Badge is null ? null : NewFloatingBadge(state),
+            useSessionIcon: state.Def.IconKind is not null || state.Def.IconColor is not null)
         {
             Width = Bounds.Width,
             Height = Bounds.Height,
@@ -1934,6 +1940,8 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         state.FloatingWindow = win;
         win.Show();
+        _floatingOrder.Add(state);
+        RefreshFloatingStrip();
 
         // EndReparent after the controls have been re-attached to the new visual tree.
         Dispatcher.UIThread.Post(() => { foreach (var t in terminals) t.EndReparent(); }, DispatcherPriority.Loaded);
@@ -1959,6 +1967,8 @@ public partial class MainWindow : Window, ISessionPromptHost
         state.Tab.Content = state.Host;
         state.FloatingWindow = null;
         state.FloatingBadge = null;
+        _floatingOrder.Remove(state);
+        RefreshFloatingStrip();
 
         TerminalTabs.Items.Add(state.Tab);
         TerminalTabs.SelectedItem = state.Tab;
@@ -1974,6 +1984,91 @@ public partial class MainWindow : Window, ISessionPromptHost
         // Also focus the terminal.
         if (state.Instance?.Terminal is { } tc)
             FocusTerminal(tc);
+    }
+
+    // -------------------------------------------------------------------------
+    // Floating-session chips in the header
+    // -------------------------------------------------------------------------
+
+    private void RefreshFloatingStrip()
+    {
+        FloatingChips.Children.Clear();
+        int count = _floatingOrder.Count;
+        FloatingStrip.IsVisible = count > 0;
+        if (count == 0) return;
+
+        FloatingStripLabel.Text = $"Floating ({count}):";
+        FloatingStripLabel.ContextMenu = count > 1 ? new ContextMenu { Items = { NewReattachAllItem() } } : null;
+        foreach (var state in _floatingOrder)
+            FloatingChips.Children.Add(NewFloatingChip(state));
+    }
+
+    private Border NewFloatingChip(TabState state)
+    {
+        var title = new TextBlock
+        {
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming      = TextTrimming.CharacterEllipsis,
+        };
+        // Follow the session's live title (e.g. the remote shell setting it).
+        title[!TextBlock.TextProperty] = state.TitleBlock[!TextBlock.TextProperty];
+
+        var icon = new MaterialIcon
+        {
+            Kind              = ResolveIconKind(state.Def),
+            Foreground        = ResolveIconBrush(state.Def),
+            Width             = 14,
+            Height            = 14,
+            Margin            = new Thickness(0, 0, 5, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(title, 1);
+
+        var chip = new Border
+        {
+            Classes = { "floatingChip" },
+            Child   = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*"), Children = { icon, title } },
+        };
+        chip[!ToolTip.TipProperty] = state.TitleBlock[!TextBlock.TextProperty];
+
+        chip.PointerReleased += (_, e) =>
+        {
+            if (e.InitialPressMouseButton == MouseButton.Left) ShowFloatingWindow(state);
+        };
+
+        var show = new MenuItem { Header = "Show window" };
+        show.Click += (_, _) => ShowFloatingWindow(state);
+        var reattach = new MenuItem { Header = "Re-attach" };
+        reattach.Click += (_, _) => state.FloatingWindow?.RequestDockBack();
+        var close = new MenuItem { Header = "Close session" };
+        close.Click += async (_, _) => await CloseTabAsync(state.Tab);
+
+        var menu = new ContextMenu { Items = { show, reattach } };
+        if (_floatingOrder.Count > 1) menu.Items.Add(NewReattachAllItem());
+        menu.Items.Add(new Separator());
+        menu.Items.Add(close);
+        chip.ContextMenu = menu;
+        return chip;
+    }
+
+    private MenuItem NewReattachAllItem()
+    {
+        var item = new MenuItem { Header = $"Re-attach all ({_floatingOrder.Count})" };
+        item.Click += (_, _) =>
+        {
+            foreach (var s in _floatingOrder.ToArray())
+                s.FloatingWindow?.RequestDockBack();
+        };
+        return item;
+    }
+
+    private static void ShowFloatingWindow(TabState state)
+    {
+        if (state.FloatingWindow is not { } win) return;
+        if (win.WindowState == WindowState.Minimized)
+            win.WindowState = WindowState.Normal;
+        win.Activate();
     }
 
     private static void FocusTerminal(Control terminal)

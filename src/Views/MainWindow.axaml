@@ -63,6 +63,36 @@
                 </Button.Flyout>
             </Button>
 
+            <!-- Floating sessions: one chip per session popped out into its own window.
+                 Click focuses the window; right-click re-attaches or closes it. -->
+            <Grid x:Name="FloatingStrip" Grid.Column="2" ColumnDefinitions="Auto,*"
+                  Margin="12,0,8,0" VerticalAlignment="Center" IsVisible="False">
+                <Grid.Styles>
+                    <Style Selector="Border.floatingChip">
+                        <Setter Property="Width" Value="140"/>
+                        <Setter Property="Height" Value="26"/>
+                        <Setter Property="Padding" Value="6,0"/>
+                        <Setter Property="CornerRadius" Value="3"/>
+                        <Setter Property="Background" Value="#2D2D30"/>
+                        <Setter Property="BorderBrush" Value="#3F3F46"/>
+                        <Setter Property="BorderThickness" Value="1"/>
+                        <Setter Property="Cursor" Value="Hand"/>
+                    </Style>
+                    <Style Selector="Border.floatingChip:pointerover">
+                        <Setter Property="Background" Value="#3E3E42"/>
+                        <Setter Property="BorderBrush" Value="#2196F3"/>
+                    </Style>
+                </Grid.Styles>
+                <TextBlock x:Name="FloatingStripLabel" Grid.Column="0"
+                           VerticalAlignment="Center" Margin="0,0,6,0"
+                           FontSize="12" Foreground="#AAAAAA"/>
+                <ScrollViewer Grid.Column="1"
+                              HorizontalScrollBarVisibility="Hidden"
+                              VerticalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="FloatingChips" Orientation="Horizontal" Spacing="4"/>
+                </ScrollViewer>
+            </Grid>
+
             <!-- Pane controls for the selected tab: TMUX / SESSION, then zoom, close, splits. -->
             <views:PaneToolbar x:Name="PaneToolbar" Grid.Column="3"/>
         </Grid>

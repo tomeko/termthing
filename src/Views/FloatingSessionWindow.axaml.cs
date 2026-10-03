@@ -37,7 +37,8 @@ public partial class FloatingSessionWindow : Window
         Action<Control, PlacementMode> openTabMenu,
         Func<PaneLayoutView?> panes,
         Action detachTmux,
-        TmuxBadge? tmuxBadge = null)
+        TmuxBadge? tmuxBadge = null,
+        bool useSessionIcon = false)
     {
         InitializeComponent();
 
@@ -50,6 +51,11 @@ public partial class FloatingSessionWindow : Window
         var titleIcon = this.FindControl<MaterialIcon>("TitleIcon")!;
         titleIcon.Kind       = iconKind;
         titleIcon.Foreground = iconBrush;
+
+        // Sessions with their own icon/colour get it as the window icon, so they are
+        // identifiable in the taskbar; default sessions keep the app icon.
+        if (useSessionIcon && SessionWindowIcon.TryCreate(iconKind, iconBrush) is { } windowIcon)
+            Icon = windowIcon;
 
         // Sync window title and toolbar label from the session's title block.
         Title = titleSource.Text;
