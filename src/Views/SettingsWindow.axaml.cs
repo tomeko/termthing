@@ -65,7 +65,6 @@ public partial class SettingsWindow : Window
     private CheckBox _confirmExit = null!;
     private CheckBox _skipPasteConfirm = null!;
     private CheckBox _skipNewlinePasteConfirm = null!;
-    private CheckBox _hideImportedSshConfig = null!;
     private CheckBox _sftpUse12HourTime = null!;
     private ComboBox _tmuxLegacyMode = null!;
 
@@ -75,15 +74,10 @@ public partial class SettingsWindow : Window
     private TextBox  _builtInExtBox = null!;
     private CheckBox _builtInDefaultCheck = null!;
 
-    // True when the user pressed OK
-    public bool Committed { get; private set; }
-
-    /// <summary>Raised when the user clicks "Scan for SSH config…" in the General tab.</summary>
-    public event EventHandler? ScanSshConfigRequested;
-    /// <summary>Raised when the user clicks "Import SSH config…" in the General tab.</summary>
-    public event EventHandler? ImportSshConfigRequested;
-    /// <summary>Raised when the user clicks "Refresh imported" in the General tab.</summary>
-    public event EventHandler? RefreshSshConfigRequested;
+    /// <summary>Raised when the user clicks "Sync from SSH config…" in the General tab.</summary>
+    public event EventHandler? SyncSshConfigRequested;
+    /// <summary>Raised when the user clicks "Import SSH config file…" in the General tab.</summary>
+    public event EventHandler? ImportSshConfigFileRequested;
 
     public SettingsWindow()
     {
@@ -94,7 +88,6 @@ public partial class SettingsWindow : Window
         _confirmExit        = this.FindControl<CheckBox>("ConfirmExitCheckBox")!;
         _skipPasteConfirm   = this.FindControl<CheckBox>("SkipPasteConfirmCheckBox")!;
         _skipNewlinePasteConfirm = this.FindControl<CheckBox>("SkipNewlinePasteConfirmCheckBox")!;
-        _hideImportedSshConfig = this.FindControl<CheckBox>("HideImportedSshConfigCheckBox")!;
         _sftpUse12HourTime  = this.FindControl<CheckBox>("SftpUse12HourTimeCheckBox")!;
         _tmuxLegacyMode     = this.FindControl<ComboBox>("TmuxLegacyModeComboBox")!;
         _builtInExtBox      = this.FindControl<TextBox>("BuiltInExtBox")!;
@@ -104,7 +97,6 @@ public partial class SettingsWindow : Window
         _confirmExit.IsChecked = SettingsService.App.ConfirmExitWithOpenSessions;
         _skipPasteConfirm.IsChecked = SettingsService.App.SkipPasteConfirmation;
         _skipNewlinePasteConfirm.IsChecked = SettingsService.App.SkipNewlinePasteConfirmation;
-        _hideImportedSshConfig.IsChecked = SettingsService.App.HideImportedSshConfig;
         _sftpUse12HourTime.IsChecked = SettingsService.App.SftpUse12HourTime;
         _tmuxLegacyMode.SelectedIndex = Math.Max(0, Array.IndexOf(TmuxLegacyModes, SettingsService.App.TmuxLegacyMode));
 
@@ -148,7 +140,6 @@ public partial class SettingsWindow : Window
         SettingsService.App.ConfirmExitWithOpenSessions = _confirmExit.IsChecked == true;
         SettingsService.App.SkipPasteConfirmation = _skipPasteConfirm.IsChecked == true;
         SettingsService.App.SkipNewlinePasteConfirmation = _skipNewlinePasteConfirm.IsChecked == true;
-        SettingsService.App.HideImportedSshConfig = _hideImportedSshConfig.IsChecked == true;
         SettingsService.App.SftpUse12HourTime = _sftpUse12HourTime.IsChecked == true;
         if (_tmuxLegacyMode.SelectedIndex is >= 0 and var i && i < TmuxLegacyModes.Length)
             SettingsService.App.TmuxLegacyMode = TmuxLegacyModes[i];
@@ -178,7 +169,6 @@ public partial class SettingsWindow : Window
 
         SettingsService.App.Applications = newApps;
         SettingsService.SaveApp();
-        Committed = true;
         Close();
     }
 
@@ -186,9 +176,8 @@ public partial class SettingsWindow : Window
 
     // SSH config import — handlers raise events so MainWindow can perform the
     // work (it owns the config and tree). Settings stays a passive UI host.
-    private void OnScanSshConfigClicked(object? sender, RoutedEventArgs e)    => ScanSshConfigRequested?.Invoke(this, EventArgs.Empty);
-    private void OnImportSshConfigClicked(object? sender, RoutedEventArgs e)  => ImportSshConfigRequested?.Invoke(this, EventArgs.Empty);
-    private void OnRefreshSshConfigClicked(object? sender, RoutedEventArgs e) => RefreshSshConfigRequested?.Invoke(this, EventArgs.Empty);
+    private void OnSyncSshConfigClicked(object? sender, RoutedEventArgs e)       => SyncSshConfigRequested?.Invoke(this, EventArgs.Empty);
+    private void OnImportSshConfigFileClicked(object? sender, RoutedEventArgs e) => ImportSshConfigFileRequested?.Invoke(this, EventArgs.Empty);
 
     private void OnAddAppClicked(object? sender, RoutedEventArgs e)
     {

@@ -89,19 +89,15 @@
                                FontWeight="SemiBold"
                                Margin="0,8,0,2"/>
 
-                    <TextBlock Text="Imported groups are read-only and refresh from their source file on every launch."
+                    <TextBlock Text="Hosts are imported as regular, editable sessions. Syncing again adds new hosts and updates changed connection details; nothing is deleted."
                                FontSize="11"
                                Foreground="Gray"
                                TextWrapping="Wrap"/>
 
                     <StackPanel Orientation="Horizontal" Spacing="6">
-                        <Button x:Name="ScanSshConfigButton"    Content="Scan for SSH config…" Click="OnScanSshConfigClicked"/>
-                        <Button x:Name="ImportSshConfigButton"  Content="Import SSH config…"   Click="OnImportSshConfigClicked"/>
-                        <Button x:Name="RefreshSshConfigButton" Content="Refresh imported"      Click="OnRefreshSshConfigClicked"/>
+                        <Button x:Name="SyncSshConfigButton"       Content="Sync from SSH config…"   Click="OnSyncSshConfigClicked"/>
+                        <Button x:Name="ImportSshConfigFileButton" Content="Import SSH config file…" Click="OnImportSshConfigFileClicked"/>
                     </StackPanel>
-
-                    <CheckBox x:Name="HideImportedSshConfigCheckBox"
-                              Content="Hide imported SSH config from the sessions tree"/>
                 </StackPanel>
             </TabItem>
 

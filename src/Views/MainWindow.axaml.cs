@@ -111,6 +111,13 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         _config = ConfigStore.LoadOrDefault();
 
+        // Imports from the old read-only OpenSSH config importer become editable sessions.
+        if (SshConfigSync.MigrateLegacyGroups(_config.RootGroup))
+        {
+            Log.Info("ssh-config", "Converted legacy read-only SSH config group(s) to editable sessions");
+            ConfigStore.Save(_config);
+        }
+
         // One-shot migration: copy legacy UiPreferences → TempSettings
         if (_config.UiPreferences is { } legacy)
         {
@@ -185,149 +192,127 @@ public partial class MainWindow : Window, ISessionPromptHost
         // First launch after an upgrade: show the notes for what changed.
         ScheduleWhatsNew();
 
-        // OpenSSH config: on first launch ask if the user wants to import; on
-        // every later launch refresh any already-imported groups from their source
-        // file. Posted to the dispatcher so the window paints first.
-        Dispatcher.UIThread.Post(async () =>
+        // OpenSSH config: on first launch offer to import. Later syncs are manual
+        // (Settings or the overflow menu). Posted so the window paints first.
+        if (!SettingsService.App.FirstRunCompleted)
         {
-            try
+            Dispatcher.UIThread.Post(async () =>
             {
-                if (!SettingsService.App.FirstRunCompleted)
-                    await OfferFirstRunSshImportAsync();
-                else
-                    await RefreshImportedSshGroupsAsync(silent: true);
-            }
-            catch (Exception ex)
-            {
-                Log.Warn("ssh-config", $"startup import error: {ex.GetType().Name}: {ex.Message}");
-            }
-        });
+                try { await OfferFirstRunSshImportAsync(); }
+                catch (Exception ex) { Log.Error("ssh-config", "First-run import failed", ex); }
+            });
+        }
     }
 
     // -----------------------------------------------------------------------
-    // OpenSSH config import / refresh
+    // OpenSSH config import (one-way: config → editable sessions)
     // -----------------------------------------------------------------------
 
     /// <summary>
-    /// First-launch onboarding: scan the well-known OpenSSH config locations and
-    /// ask whether to import any found. Sets <c>FirstRunCompleted=true</c> at the
-    /// end regardless of the user's choice so they aren't asked again.
+    /// First-launch onboarding: offer to import the default OpenSSH config files.
+    /// Marks first-run done before asking so the prompt can never repeat, whatever
+    /// happens to the dialog.
     /// </summary>
     private async Task OfferFirstRunSshImportAsync()
     {
-        var paths = TermThing.Ssh.SshConfigImporter.Discover();
-        if (paths.Count == 0)
+        SettingsService.App.FirstRunCompleted = true;
+        SettingsService.SaveApp();
+
+        var sources = DiscoverSshConfigSources();
+        if (sources.Count == 0) return;
+
+        bool yes = await ShowYesNoAsync("Import OpenSSH config?", DescribeSources(sources) +
+            "\n\nImport these hosts as sessions? You can re-sync later from Settings " +
+            "or the ⋯ menu; existing sessions are updated, not duplicated.");
+        Log.Info("ssh-config", $"First-run import prompt answered: {(yes ? "yes" : "no")}");
+        if (yes) await SyncSshConfigSourcesAsync(sources);
+    }
+
+    /// <summary>"Sync from SSH config…": re-imports the default OpenSSH config files.</summary>
+    private async Task SyncDefaultSshConfigInteractiveAsync()
+    {
+        var sources = DiscoverSshConfigSources();
+        if (sources.Count == 0)
         {
-            SettingsService.App.FirstRunCompleted = true;
-            SettingsService.SaveApp();
+            await ShowErrorAsync("Sync from SSH config",
+                "No OpenSSH config files with Host entries were found in the default locations.");
             return;
         }
 
-        var summary = string.Join("\n", paths.Select(p => $"  • {p}"));
-        bool yes = await ShowYesNoAsync(
-            "Import OpenSSH config?",
-            $"Found {paths.Count} OpenSSH config file(s):\n\n{summary}\n\n" +
-            "Import them as read-only sessions? Each file becomes a top-level group " +
-            "that refreshes from its source on every launch.");
-
-        if (yes)
-            await ImportSshConfigFilesAsync(paths);
-
-        SettingsService.App.FirstRunCompleted = true;
-        SettingsService.SaveApp();
+        bool yes = await ShowYesNoAsync("Sync from SSH config?", DescribeSources(sources) +
+            "\n\nNew hosts are added and changed connection details are updated. " +
+            "Names, folders and other session settings are kept; nothing is deleted.");
+        if (yes) await SyncSshConfigSourcesAsync(sources);
     }
 
-    /// <summary>
-    /// Re-reads each existing read-only group whose <see cref="SessionGroup.OriginKind"/>
-    /// is <c>"ssh-config"</c> and replaces its sessions from the parsed source file.
-    /// The group itself (Id, Name, position in the tree) is preserved.
-    /// </summary>
-    private async Task RefreshImportedSshGroupsAsync(bool silent)
+    /// <summary>"Import SSH config file…": syncs one user-picked file.</summary>
+    private async Task ImportSshConfigFileInteractiveAsync()
     {
-        int refreshed = 0, missing = 0;
-        foreach (var grp in _config.RootGroup.Subgroups.ToArray())
+        var top = TopLevel.GetTopLevel(this);
+        if (top is null) return;
+        var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            if (grp.OriginKind != "ssh-config" || string.IsNullOrEmpty(grp.SourcePath)) continue;
-            if (!File.Exists(grp.SourcePath)) { missing++; continue; }
+            Title         = "Import OpenSSH config",
+            AllowMultiple = false,
+        });
+        var picked = files?.FirstOrDefault();
+        if (picked is null) return;
+        var path = picked.TryGetLocalPath() ?? picked.Path.LocalPath;
+        if (string.IsNullOrWhiteSpace(path)) return;
 
+        try
+        {
+            var hosts = SshConfigImporter.Parse(path);
+            await SyncSshConfigSourcesAsync([(path, hosts)]);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("ssh-config", $"Import of {path} failed", ex);
+            await ShowErrorAsync("SSH config import", $"{path}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Default OpenSSH config files that define at least one literal host.</summary>
+    private static List<(string Path, List<ParsedSshHost> Hosts)> DiscoverSshConfigSources()
+    {
+        var sources = new List<(string, List<ParsedSshHost>)>();
+        foreach (var path in SshConfigImporter.Discover())
+        {
             try
             {
-                var parsed = TermThing.Ssh.SshConfigImporter.Parse(grp.SourcePath);
-                var rebuilt = TermThing.Ssh.SshConfigImporter.ToSessionGroup(grp.SourcePath, parsed);
-                grp.Sessions.Clear();
-                foreach (var s in rebuilt.Sessions) grp.Sessions.Add(s);
-                refreshed++;
+                var hosts = SshConfigImporter.Parse(path);
+                if (hosts.Count > 0) sources.Add((path, hosts));
             }
             catch (Exception ex)
             {
-                Log.Warn("ssh-config", $"refresh failed for {grp.SourcePath}: {ex.Message}");
+                Log.Warn("ssh-config", $"Could not parse {path}", ex);
             }
         }
+        return sources;
+    }
 
-        if (refreshed > 0 || missing > 0)
+    private static string DescribeSources(IReadOnlyList<(string Path, List<ParsedSshHost> Hosts)> sources)
+        => "Found OpenSSH config:\n\n" +
+           string.Join("\n", sources.Select(s => $"  • {s.Path} ({s.Hosts.Count} host{(s.Hosts.Count == 1 ? "" : "s")})"));
+
+    private async Task SyncSshConfigSourcesAsync(IReadOnlyList<(string Path, List<ParsedSshHost> Hosts)> sources)
+    {
+        int added = 0, updated = 0, unchanged = 0;
+        foreach (var (path, hosts) in sources)
+        {
+            var r = SshConfigSync.Apply(_config.RootGroup, path, hosts);
+            Log.Info("ssh-config", $"Synced {path}: {r.Added} added, {r.Updated} updated, {r.Unchanged} unchanged");
+            added += r.Added; updated += r.Updated; unchanged += r.Unchanged;
+        }
+
+        if (added > 0 || updated > 0)
         {
             SessionTree.SetRoot(_config.RootGroup);
             SaveConfig();
         }
 
-        if (!silent)
-            await ShowErrorAsync("SSH config refresh",
-                $"Refreshed {refreshed} group(s)." +
-                (missing > 0 ? $"\n\n{missing} source file(s) no longer exist on disk." : ""));
-    }
-
-    /// <summary>
-    /// Imports each path as a new read-only top-level group. If a group already
-    /// exists for the same source path, it is replaced in place rather than duplicated.
-    /// </summary>
-    private async Task ImportSshConfigFilesAsync(IReadOnlyList<string> paths)
-    {
-        int added = 0, replaced = 0;
-        var problems = new List<string>();
-
-        foreach (var path in paths)
-        {
-            try
-            {
-                var parsed = TermThing.Ssh.SshConfigImporter.Parse(path);
-                var group  = TermThing.Ssh.SshConfigImporter.ToSessionGroup(path, parsed);
-
-                var existing = _config.RootGroup.Subgroups
-                    .FirstOrDefault(g => g.OriginKind == "ssh-config"
-                                      && string.Equals(g.SourcePath, path, StringComparison.OrdinalIgnoreCase));
-                if (existing is not null)
-                {
-                    existing.Name = group.Name;
-                    existing.Sessions.Clear();
-                    foreach (var s in group.Sessions) existing.Sessions.Add(s);
-                    replaced++;
-                }
-                else
-                {
-                    _config.RootGroup.Subgroups.Add(group);
-                    added++;
-                }
-            }
-            catch (Exception ex)
-            {
-                problems.Add($"{path}: {ex.Message}");
-            }
-        }
-
-        SessionTree.SetRoot(_config.RootGroup);
-        SaveConfig();
-
-        var lines = new List<string>();
-        if (added > 0)    lines.Add($"Added {added} group(s).");
-        if (replaced > 0) lines.Add($"Replaced {replaced} existing group(s).");
-        if (problems.Count > 0)
-        {
-            lines.Add("");
-            lines.Add("Problems:");
-            lines.AddRange(problems);
-        }
-        if (lines.Count > 0)
-            await ShowErrorAsync("SSH config import", string.Join("\n", lines));
+        await ShowErrorAsync("SSH config import",
+            $"Added {added} session(s), updated {updated}, {unchanged} already up to date.");
     }
 
     /// <summary>Modal Yes/No confirmation dialog. Returns true when Yes is clicked.</summary>
@@ -521,47 +506,13 @@ public partial class MainWindow : Window, ISessionPromptHost
     private async void OnSettingsClicked(object? sender, RoutedEventArgs e)
     {
         var win = new SettingsWindow();
-        win.ScanSshConfigRequested    += async (_, _) => await ScanSshConfigInteractiveAsync();
-        win.ImportSshConfigRequested  += async (_, _) => await ImportSshConfigInteractiveAsync();
-        win.RefreshSshConfigRequested += async (_, _) => await RefreshImportedSshGroupsAsync(silent: false);
+        win.SyncSshConfigRequested       += async (_, _) => await SyncDefaultSshConfigInteractiveAsync();
+        win.ImportSshConfigFileRequested += async (_, _) => await ImportSshConfigFileInteractiveAsync();
         await win.ShowDialog(this);
-        // Settings can toggle tree-visibility flags (e.g. HideImportedSshConfig)
-        // — rebuild so the change shows up without a restart.
-        if (win.Committed)
-            SessionTree.SetRoot(_config.RootGroup);
     }
 
-    private async Task ScanSshConfigInteractiveAsync()
-    {
-        var paths = TermThing.Ssh.SshConfigImporter.Discover();
-        if (paths.Count == 0)
-        {
-            await ShowErrorAsync("Scan for SSH config",
-                "No OpenSSH config files were found in the default locations.");
-            return;
-        }
-        var summary = string.Join("\n", paths.Select(p => $"  • {p}"));
-        bool yes = await ShowYesNoAsync(
-            "Import OpenSSH config?",
-            $"Found {paths.Count} OpenSSH config file(s):\n\n{summary}\n\nImport them as read-only sessions?");
-        if (yes) await ImportSshConfigFilesAsync(paths);
-    }
-
-    private async Task ImportSshConfigInteractiveAsync()
-    {
-        var top = TopLevel.GetTopLevel(this);
-        if (top is null) return;
-        var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-        {
-            Title         = "Import OpenSSH config",
-            AllowMultiple = false,
-        });
-        var picked = files?.FirstOrDefault();
-        if (picked is null) return;
-        var path = picked.TryGetLocalPath() ?? picked.Path.LocalPath;
-        if (string.IsNullOrWhiteSpace(path)) return;
-        await ImportSshConfigFilesAsync(new[] { path });
-    }
+    private async void OnSyncSshConfigClicked(object? sender, RoutedEventArgs e)
+        => await SyncDefaultSshConfigInteractiveAsync();
 
     private async void OnMainWindowKeyDown(object? sender, KeyEventArgs e)
     {
@@ -764,6 +715,7 @@ public partial class MainWindow : Window, ISessionPromptHost
         {
             var path = picked.TryGetLocalPath() ?? picked.Path.LocalPath;
             var imported = SessionImportExport.Import(path);
+            SshConfigSync.MigrateLegacyGroups(imported);
             var badPaths = SessionImportExport.SanitizeKeyPaths(imported);
             _config.RootGroup.Subgroups.Add(imported);
             SessionTree.SetRoot(_config.RootGroup);

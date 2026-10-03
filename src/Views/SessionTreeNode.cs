@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Avalonia.Media;
-using FontStyle = Avalonia.Media.FontStyle;
 using Material.Icons;
 using TermThing.Sessions;
 
@@ -26,19 +25,8 @@ public class SessionTreeNode : INotifyPropertyChanged
     public bool IsGroup   => Tag is SessionGroup;
     public bool IsSession => Tag is SessionDefinition;
 
-    /// <summary>
-    /// True when this node is part of a read-only group (the group itself or any
-    /// ancestor was marked <see cref="SessionGroup.IsReadOnly"/>). Set by
-    /// <see cref="SessionTreeView"/> when it rebuilds the tree. The XAML template
-    /// uses this to render the row in italics.
-    /// </summary>
-    public bool IsReadOnly { get; init; }
-
-    /// <summary>Italic when read-only, normal otherwise — bound from the item template.</summary>
-    public FontStyle FontStyle => IsReadOnly ? FontStyle.Italic : FontStyle.Normal;
-
-    /// <summary>Tooltip shown for read-only nodes — typically the source file path.</summary>
-    public string? ReadOnlyTooltip { get; init; }
+    /// <summary>Hover text for the row (e.g. the SSH config alias an imported session tracks).</summary>
+    public string? ToolTip { get; init; }
 
     /// <summary>Total recursive session count (set when wrapping a group node).</summary>
     public int ChildCount { get; init; }

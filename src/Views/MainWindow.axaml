@@ -51,6 +51,7 @@
                     <MenuFlyout>
                         <MenuItem Header="Import sessions…"    Click="OnImportClicked"/>
                         <MenuItem Header="Export sessions…"    Click="OnExportClicked"/>
+                        <MenuItem Header="Sync from SSH config…" Click="OnSyncSshConfigClicked"/>
                         <Separator/>
                         <MenuItem Header="Manage known hosts…" Click="OnManageKnownHostsClicked"/>
                         <Separator/>

@@ -281,49 +281,19 @@ public static class SshConfigImporter
     }
 
     // -----------------------------------------------------------------------
-    // Convert to SessionGroup
+    // Convert to session settings
     // -----------------------------------------------------------------------
 
-    /// <summary>
-    /// Builds a read-only <see cref="SessionGroup"/> from parsed hosts. The group's
-    /// <see cref="SessionGroup.SourcePath"/> is set to <paramref name="sourcePath"/>
-    /// so the Refresh action can re-read it later.
-    /// </summary>
-    public static SessionGroup ToSessionGroup(string sourcePath, IReadOnlyList<ParsedSshHost> hosts)
+    /// <summary>Maps one parsed host onto the SSH connection fields TermThing models.</summary>
+    public static SshSettings ToSettings(ParsedSshHost h) => new()
     {
-        var group = new SessionGroup
-        {
-            Name       = $"SSH config — {Path.GetFileName(sourcePath)}",
-            IsReadOnly = true,
-            OriginKind = "ssh-config",
-            SourcePath = sourcePath,
-        };
-
-        foreach (var h in hosts)
-            group.Sessions.Add(ToDefinition(h));
-
-        return group;
-    }
-
-    private static SessionDefinition ToDefinition(ParsedSshHost h)
-    {
-        var settings = new SshSettings
-        {
-            Host         = string.IsNullOrWhiteSpace(h.HostName) ? h.Alias : h.HostName!,
-            Port         = h.Port ?? 22,
-            Username     = h.User ?? string.Empty,
-            KeyFilePath  = h.IdentityFile,
-            ProxyCommand = h.ProxyCommand,
-            JumpHosts    = ParseProxyJump(h.ProxyJump),
-        };
-
-        return new SessionDefinition
-        {
-            Name     = h.Alias,
-            Kind     = SessionKind.Ssh,
-            Settings = settings,
-        };
-    }
+        Host         = string.IsNullOrWhiteSpace(h.HostName) ? h.Alias : h.HostName!,
+        Port         = h.Port ?? 22,
+        Username     = h.User ?? string.Empty,
+        KeyFilePath  = h.IdentityFile,
+        ProxyCommand = h.ProxyCommand,
+        JumpHosts    = ParseProxyJump(h.ProxyJump),
+    };
 
     private static List<JumpHost> ParseProxyJump(string? proxyJump)
     {

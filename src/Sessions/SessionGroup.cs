@@ -14,20 +14,20 @@ public sealed class SessionGroup
     public ObservableCollection<SessionGroup> Subgroups { get; init; } = [];
 
     /// <summary>
-    /// When <c>true</c>, the tree UI disables mutation operations (edit/rename/delete/drop)
-    /// on this group and its sessions. Used for imported groups whose contents are
-    /// regenerated from an external source (e.g. OpenSSH config).
+    /// Legacy: set by the old read-only OpenSSH config importer. Only read so
+    /// <c>SshConfigSync.MigrateLegacyGroups</c> can convert those groups to editable ones.
     /// </summary>
     public bool IsReadOnly { get; set; }
 
     /// <summary>
     /// Origin tag for imported groups (e.g. <c>"ssh-config"</c>). <c>null</c> for user-created groups.
+    /// An ssh-config group is where newly imported hosts land.
     /// </summary>
     public string? OriginKind { get; set; }
 
     /// <summary>
-    /// Absolute path to the source the group was generated from (e.g. <c>~/.ssh/config</c>).
-    /// Used by the refresh action to re-read and rebuild the group.
+    /// Absolute path of the file the group was first imported from (e.g. <c>~/.ssh/config</c>).
+    /// Informational; sync matches sessions by alias, not by path.
     /// </summary>
     public string? SourcePath { get; set; }
 
