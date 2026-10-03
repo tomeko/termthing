@@ -1949,6 +1949,7 @@ public partial class SftpFileBrowserView : UserControl
             }
             catch (Exception ex)
             {
+                Log.Warn("sftp", $"Drag-out download of {entry.FullPath} failed", ex);
                 SetStatus($"Drag-out download failed: {ex.Message}");
                 return;
             }
@@ -1973,7 +1974,8 @@ public partial class SftpFileBrowserView : UserControl
 
             var transfer = new DataTransfer();
             transfer.Add(DataTransferItem.CreateFile(storageItem));
-            await DragDrop.DoDragDropAsync(pointerArgs, transfer, DragDropEffects.Copy);
+            var effect = await DragDrop.DoDragDropAsync(pointerArgs, transfer, DragDropEffects.Copy);
+            Log.Info("sftp", $"Drag-out of {entry.FullPath} finished: {effect}");
         }
         finally
         {
