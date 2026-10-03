@@ -12,12 +12,21 @@
 
     <Grid Margin="16" RowDefinitions="Auto,Auto,Auto,*,Auto">
 
-        <!-- Name + version -->
-        <StackPanel Grid.Row="0" Spacing="2" Margin="0,0,0,12">
-            <TextBlock x:Name="NameText" FontSize="20" FontWeight="SemiBold"/>
-            <TextBlock Text="Tabbed terminal for local shells, SSH and serial."
-                       Foreground="#999999"/>
-        </StackPanel>
+        <!-- Logo + name + version. The .ico's 256px frame is decoded (Skia reads ICO)
+             and scaled down, so no separate PNG asset is needed. -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*" Margin="0,0,0,12">
+            <Image Grid.Column="0"
+                   Source="avares://TermThing/Assets/tt_logo2.ico"
+                   Width="56" Height="56"
+                   Margin="0,0,14,0"
+                   VerticalAlignment="Center"
+                   RenderOptions.BitmapInterpolationMode="HighQuality"/>
+            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                <TextBlock x:Name="NameText" FontSize="20" FontWeight="SemiBold"/>
+                <TextBlock Text="Tabbed terminal for local shells, SSH and serial."
+                           Foreground="#999999"/>
+            </StackPanel>
+        </Grid>
 
         <!-- Build / environment info (also what "Copy info" puts on the clipboard) -->
         <Grid Grid.Row="1"
