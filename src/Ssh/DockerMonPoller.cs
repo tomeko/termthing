@@ -3,6 +3,7 @@ using Renci.SshNet;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using TermThing.Diagnostics;
 
 namespace TermThing.Ssh;
 
@@ -141,7 +142,7 @@ public sealed class DockerMonPoller : IDisposable
         {
             try
             {
-                if (!_client.IsConnected) return false;
+                if (!_client.IsAlive()) return false;
                 using var cmd = _client.CreateCommand("command -v docker >/dev/null 2>&1 && docker --version 2>/dev/null");
                 cmd.CommandTimeout = TimeSpan.FromSeconds(5);
                 var output = cmd.Execute();
@@ -168,13 +169,28 @@ public sealed class DockerMonPoller : IDisposable
 
     public void RefreshNow() => Task.Run(Tick);
 
+    // Runs on a timer thread, where an escaping exception terminates the process.
+    // Teardown disposes the SSH client without waiting for an in-flight tick.
     private void Tick()
+    {
+        try { TickCore(); }
+        catch (Exception ex) when (_disposed || ex is ObjectDisposedException)
+        {
+            // Session is going away — nothing to report.
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("dockermon", "Poll failed", ex);
+        }
+    }
+
+    private void TickCore()
     {
         if (_disposed) return;
         if (Interlocked.Exchange(ref _ticking, 1) == 1) return;
         try
         {
-            if (!_client.IsConnected) return;
+            if (!_client.IsAlive()) return;
             string output;
             try
             {
@@ -238,7 +254,7 @@ public sealed class DockerMonPoller : IDisposable
         {
             try
             {
-                if (!_client.IsConnected) return false;
+                if (!_client.IsAlive()) return false;
                 using var cmd = _client.CreateCommand(cmdLine);
                 cmd.CommandTimeout = timeout;
                 cmd.Execute();

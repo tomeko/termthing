@@ -22,6 +22,7 @@ using TermThing.Configuration;
 using TermThing.Editor;
 using TermThing.Sftp;
 using TermThing.Diagnostics;
+using TermThing.Ssh;
 
 namespace TermThing.Views;
 
@@ -331,7 +332,7 @@ public partial class SftpFileBrowserView : UserControl
     private async Task NavigateAsync(string path)
     {
         if (_navigating) return;
-        if (!_sftpClient.IsConnected) return;
+        if (!_sftpClient.IsAlive()) return;
         _navigating = true;
 
         try
@@ -376,6 +377,10 @@ public partial class SftpFileBrowserView : UserControl
                 _pathBox.Text    = _currentPath;
                 UpdateSyncButtonVisibility();
             });
+        }
+        catch (ObjectDisposedException)
+        {
+            // The session was torn down while the listing was in flight — nothing to show.
         }
         catch (Exception ex)
         {
@@ -773,7 +778,7 @@ public partial class SftpFileBrowserView : UserControl
         _menuOpen.IsEnabled     = single && allFiles;
         _menuOpenWith.IsEnabled = single && allFiles;
         _menuTail.IsEnabled     = single && allFiles
-                                  && _sshClient?.IsConnected == true
+                                  && _sshClient.IsAlive()
                                   && TailFileRequested != null;
 
         // Single-selection (file or directory)
@@ -786,7 +791,7 @@ public partial class SftpFileBrowserView : UserControl
 
         // Single-directory-only operations — hide rather than disable; they're
         // contextually meaningless for files or multi-selection.
-        _menuProperties.IsVisible    = oneDir && _sshClient?.IsConnected == true;
+        _menuProperties.IsVisible    = oneDir && _sshClient.IsAlive();
         _menuBookmarkFolder.IsVisible = oneDir && _definition != null;
         _itemSeparator.IsVisible      = _menuProperties.IsVisible || _menuBookmarkFolder.IsVisible;
 
@@ -799,7 +804,7 @@ public partial class SftpFileBrowserView : UserControl
     {
         if (_filesGrid.SelectedItem is not SftpEntry entry || !entry.IsDirectory || entry.IsParentLink)
             return;
-        if (_sshClient == null || !_sshClient.IsConnected)
+        if (_sshClient == null || !_sshClient.IsAlive())
             return;
 
         var owner = TopLevel.GetTopLevel(this) as Window;

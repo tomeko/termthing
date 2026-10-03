@@ -161,7 +161,7 @@ public static class TmuxClient
 
     private static (int Exit, string Output) Run(SshClient client, string script)
     {
-        if (!client.IsConnected) return (-1, string.Empty);
+        if (!client.IsAlive()) return (-1, string.Empty);
         using var cmd = CreateCommand(client, script);
         cmd.CommandTimeout = Timeout;
         var output = cmd.Execute();

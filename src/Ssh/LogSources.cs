@@ -208,7 +208,7 @@ public sealed class DockerLogsSource : SshExecLogSource
                 : $"docker logs -f --since '{since}' {_id} 2>&1";
             var error = Stream(cmd, ct);
             if (ct.IsCancellationRequested) break;
-            if (error != null || !Client.IsConnected)
+            if (error != null || !Client.IsAlive())
                 return new(LogStreamState.Ended, $"(stream ended: {error ?? "SSH connection closed"})");
 
             // Stream ended: find out why, then wait for the container to come back.

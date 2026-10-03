@@ -154,7 +154,7 @@ internal static class SshChainConnector
             }
             for (int i = clients.Count - 1; i >= 0; i--)
             {
-                try { if (clients[i].IsConnected) clients[i].Disconnect(); } catch { }
+                try { if (clients[i].IsAlive()) clients[i].Disconnect(); } catch { }
                 try { clients[i].Dispose(); } catch { }
             }
             throw;
@@ -222,7 +222,7 @@ internal static class SshChainConnector
             await Task.Run(() => client.Connect(), ct);
         }
 
-        if (!client.IsConnected)
+        if (!client.IsAlive())
         {
             client.Dispose();
             throw new Exception($"Failed to connect to {logicalHost}:{logicalPort}.");
