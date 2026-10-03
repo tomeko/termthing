@@ -23,6 +23,7 @@ using TermThing.Sessions;
 using TermThing.Sessions.Launchers;
 using TermThing.Ssh;
 using TermThing.Updater;
+using TermThing.Diagnostics;
 
 namespace TermThing.Views;
 
@@ -198,7 +199,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[ssh-config] startup import error: {ex.GetType().Name}: {ex.Message}");
+                Log.Warn("ssh-config", $"startup import error: {ex.GetType().Name}: {ex.Message}");
             }
         });
     }
@@ -259,7 +260,7 @@ public partial class MainWindow : Window, ISessionPromptHost
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[ssh-config] refresh failed for {grp.SourcePath}: {ex.Message}");
+                Log.Warn("ssh-config", $"refresh failed for {grp.SourcePath}: {ex.Message}");
             }
         }
 
@@ -2211,6 +2212,7 @@ public partial class MainWindow : Window, ISessionPromptHost
 
         SaveConfig();
         base.OnClosing(e);
+        Log.Info("app", "Exiting");
         Environment.Exit(0);
     }
 

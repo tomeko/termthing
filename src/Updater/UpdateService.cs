@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using TermThing.Diagnostics;
 
 namespace TermThing.Updater;
 
@@ -96,7 +97,7 @@ public static class UpdateService
             if (response.StatusCode == System.Net.HttpStatusCode.Forbidden ||
                 response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
             {
-                System.Diagnostics.Debug.WriteLine("[Updater] Rate-limited by GitHub; will retry next interval.");
+                Log.Warn("updater", "Rate-limited by GitHub; will retry next interval.");
                 return null;
             }
 
@@ -146,7 +147,7 @@ public static class UpdateService
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[Updater] Release fetch failed: {ex.Message}");
+            Log.Warn("updater", $"Release fetch failed: {ex.Message}");
             return null;
         }
     }

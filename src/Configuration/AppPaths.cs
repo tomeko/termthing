@@ -18,6 +18,17 @@ public static class AppPaths
         }
     }
 
+    /// <summary>Daily application log files (see <c>Diagnostics.Log</c>).</summary>
+    public static string LogsDirectory
+    {
+        get
+        {
+            var dir = Path.Combine(AppContext.BaseDirectory, "logs");
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+    }
+
     public static string SessionsFile =>
         Path.Combine(ConfigDirectory, "termthing.json");
 

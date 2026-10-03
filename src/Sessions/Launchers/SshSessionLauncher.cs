@@ -13,6 +13,7 @@ using TermThing.Panes;
 using TermThing.Ssh;
 using TermThing.Tmux;
 using TermThing.Views;
+using TermThing.Diagnostics;
 
 namespace TermThing.Sessions.Launchers;
 
@@ -157,7 +158,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
 
             proxyTransport = await ProxyCommandTransport.StartAsync(
                 settings.ProxyCommand, settings.Host, settings.Port, effectiveUsername, cancellationToken);
-            Debug.WriteLine($"[SSH] ProxyCommand listening on {proxyTransport.LoopbackEndpoint}: {proxyTransport.ResolvedCommand}");
+            Log.Info("ssh", $"ProxyCommand listening on {proxyTransport.LoopbackEndpoint}: {proxyTransport.ResolvedCommand}");
         }
 
         SshClient client;
@@ -195,7 +196,8 @@ public sealed class SshSessionLauncher : ISessionLauncher
                 try { client.Connect(); }
                 catch (Exception ex) { firstConnectError = ex; }
             }, cancellationToken);
-            Debug.WriteLine($"[SSH] Connect: {connectSw.ElapsedMilliseconds}ms  kex={connectionInfo.CurrentKeyExchangeAlgorithm}  cipher={connectionInfo.CurrentServerEncryption}");
+            if (firstConnectError is null)
+                Log.Info("ssh", $"Connected {settings.Username}@{settings.Host}:{settings.Port}: {connectSw.ElapsedMilliseconds}ms  kex={connectionInfo.CurrentKeyExchangeAlgorithm}  cipher={connectionInfo.CurrentServerEncryption}");
 
             // Only swallow the connect failure when it was caused by an untrusted host
             // key (so we can show the prompt and retry). Anything else — auth failure,
@@ -205,7 +207,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             {
                 client.Dispose();
                 if (proxyTransport is not null) { await proxyTransport.DisposeAsync(); proxyTransport = null; }
-                Debug.WriteLine($"[SSH] Connect failed: {firstConnectError.GetType().Name}: {firstConnectError.Message}");
+                Log.Warn("ssh", $"Connect to {settings.Host}:{settings.Port} failed: {firstConnectError.GetType().Name}: {firstConnectError.Message}");
                 throw EnrichAuthException(firstConnectError, settings);
             }
 
@@ -213,6 +215,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             {
                 var action = await promptHost.PromptHostKeyAsync(settings.Host, settings.Port,
                     pendingStatus!.Value, pendingKeyArgs);
+                Log.Info("ssh", $"Host key for {settings.Host}:{settings.Port} was {pendingStatus.Value}; user chose {action}");
 
                 if (action == HostKeyAction.Cancel)
                 {
@@ -233,7 +236,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
                     await proxyTransport.DisposeAsync();
                     proxyTransport = await ProxyCommandTransport.StartAsync(
                         settings.ProxyCommand!, settings.Host, settings.Port, effectiveUsername, cancellationToken);
-                    Debug.WriteLine($"[SSH] ProxyCommand restarted on {proxyTransport.LoopbackEndpoint} for host-key retry.");
+                    Log.Info("ssh", $"ProxyCommand restarted on {proxyTransport.LoopbackEndpoint} for host-key retry.");
                     connectionInfo = SshConnectionInfoFactory.Build(
                         proxyTransport.LoopbackEndpoint.Address.ToString(),
                         proxyTransport.LoopbackEndpoint.Port,
@@ -251,7 +254,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
                 {
                     client.Dispose();
                     if (proxyTransport is not null) { await proxyTransport.DisposeAsync(); proxyTransport = null; }
-                    Debug.WriteLine($"[SSH] Retry connect after host-key trust failed: {ex.GetType().Name}: {ex.Message}");
+                    Log.Warn("ssh", $"Retry connect after host-key trust failed: {ex.GetType().Name}: {ex.Message}");
                     throw EnrichAuthException(ex, settings);
                 }
             }
@@ -261,7 +264,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
             // --- Jump-host path ---
             chainResult = await SshChainConnector.ConnectAsync(
                 hops, settings, _knownHosts, promptHost,
-                progress: msg => Debug.WriteLine($"[SSH jump] {msg}"),
+                progress: msg => Log.Info("ssh-jump", msg),
                 cancellationToken: cancellationToken);
             client = chainResult.FinalClient;
         }
@@ -396,7 +399,7 @@ public sealed class SshSessionLauncher : ISessionLauncher
                     if (t.Exception is { } ex)
                     {
                         var inner = ex.GetBaseException();
-                        Debug.WriteLine($"[SSH] CompleteConnectionAsync failed: {inner.GetType().Name}: {inner.Message}");
+                        Log.Warn("ssh", $"CompleteConnectionAsync failed: {inner.GetType().Name}: {inner.Message}");
                         Dispatcher.UIThread.Post(() =>
                         {
                             try
@@ -1171,7 +1174,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[SSH] shell after tmux failed: {ex.Message}");
+            Log.Warn("ssh", $"shell after tmux failed: {ex.Message}");
             FireSessionEnded();
         }
     }
@@ -1377,7 +1380,7 @@ internal sealed class SshSessionInstance : ISessionInstance
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[SSH] split pane failed: {ex.Message}");
+            Log.Warn("ssh", $"split pane failed: {ex.Message}");
             try { tc.Terminal?.Write($"\r\n\u001b[1;31mCould not open a shell: {ex.Message}\u001b[0m\r\n"); } catch { }
         }
     }

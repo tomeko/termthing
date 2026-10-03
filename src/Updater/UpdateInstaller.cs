@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using TermThing.Diagnostics;
 
 namespace TermThing.Updater;
 
@@ -48,6 +49,8 @@ public static class UpdateInstaller
         // Locate the SHA256SUMS.txt asset
         var sumsAsset = info.Assets.FirstOrDefault(
             a => a.Name.Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase));
+
+        Log.Info("updater", $"Installing {info.Latest} from {zipAsset.Name}");
 
         // Create a temporary working directory
         var workDir = Path.Combine(Path.GetTempPath(), $"termthing-update-{Guid.NewGuid():N}");
@@ -97,11 +100,14 @@ public static class UpdateInstaller
 
             progress?.Report(1.0);
 
+            Log.Info("updater", "Update staged; swap script launched, shutting down");
+
             // Trigger app shutdown so the swap script can overwrite the locked file
             shutdownCallback?.Invoke();
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Error("updater", "Update install failed", ex);
             // Clean up work dir on failure so temp doesn't fill up with partial downloads
             try { Directory.Delete(workDir, recursive: true); } catch { /* best-effort */ }
             throw;

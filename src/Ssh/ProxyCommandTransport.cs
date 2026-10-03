@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using TermThing.Diagnostics;
 
 namespace TermThing.Ssh;
 
@@ -100,7 +101,7 @@ public sealed class ProxyCommandTransport : IAsyncDisposable
             {
                 string? line;
                 while ((line = await process.StandardError.ReadLineAsync(transport._cts.Token).ConfigureAwait(false)) is not null)
-                    Debug.WriteLine($"[proxy] {line}");
+                    Log.Info("proxy", line);
             }
             catch { /* expected on dispose */ }
         }, transport._cts.Token);
@@ -128,7 +129,7 @@ public sealed class ProxyCommandTransport : IAsyncDisposable
             await Task.WhenAny(socketToProcess, processToSocket).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { /* dispose path */ }
-        catch (Exception ex) { Debug.WriteLine($"[proxy] accept loop error: {ex.GetType().Name}: {ex.Message}"); }
+        catch (Exception ex) { Log.Warn("proxy", $"accept loop error: {ex.GetType().Name}: {ex.Message}"); }
         finally
         {
             try { client?.Dispose(); } catch { }
@@ -152,7 +153,7 @@ public sealed class ProxyCommandTransport : IAsyncDisposable
         catch (OperationCanceledException) { /* expected on dispose */ }
         catch (IOException) { /* socket/process closed mid-read; treat as EOF */ }
         catch (ObjectDisposedException) { /* same */ }
-        catch (Exception ex) { Debug.WriteLine($"[proxy] {label} pump error: {ex.GetType().Name}: {ex.Message}"); }
+        catch (Exception ex) { Log.Warn("proxy", $"{label} pump error: {ex.GetType().Name}: {ex.Message}"); }
     }
 
     public async ValueTask DisposeAsync()

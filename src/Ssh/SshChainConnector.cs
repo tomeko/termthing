@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Net;
 using TermThing.Sessions;
 using TermThing.Views;
+using TermThing.Diagnostics;
 
 namespace TermThing.Ssh;
 
@@ -105,7 +106,7 @@ internal static class SshChainConnector
                 clients.Add(hopClient);
                 parentClient = hopClient;
 
-                Debug.WriteLine($"[SSH jump] Hop {i + 1}/{hops.Count} ({hop.DisplayName}): {sw.ElapsedMilliseconds} ms");
+                Log.Info("ssh-jump", $"Hop {i + 1}/{hops.Count} ({hop.DisplayName}): {sw.ElapsedMilliseconds} ms");
             }
 
             // ----------------------------------------------------------------

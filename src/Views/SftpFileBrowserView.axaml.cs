@@ -21,6 +21,7 @@ using System.Threading.Tasks;
 using TermThing.Configuration;
 using TermThing.Editor;
 using TermThing.Sftp;
+using TermThing.Diagnostics;
 
 namespace TermThing.Views;
 
@@ -1917,7 +1918,7 @@ public partial class SftpFileBrowserView : UserControl
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[SFTP] native drag failed, falling back: {ex.Message}");
+                    Log.Warn("sftp", $"native drag failed, falling back: {ex.Message}");
                     started = false;
                 }
                 if (started) return;

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using TermThing.Sessions;
+using TermThing.Diagnostics;
 
 namespace TermThing.Configuration;
 
@@ -25,9 +26,11 @@ public static class ConfigStore
             var json = File.ReadAllText(path);
             return JsonSerializer.Deserialize<AppConfig>(json, _options) ?? new AppConfig();
         }
-        catch
+        catch (Exception ex)
         {
-            // Corrupted config — start fresh
+            // Corrupted config — keep a copy so the next save doesn't destroy it, then start fresh
+            var backup = SettingsStore.BackupCorrupt(path);
+            Log.Error("config", $"Could not read {path}; starting fresh (backup: {backup ?? "none"})", ex);
             return new AppConfig();
         }
     }

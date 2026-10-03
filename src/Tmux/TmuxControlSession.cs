@@ -12,6 +12,7 @@ using Iciclecreek.Terminal;
 using Renci.SshNet;
 using TermThing.Panes;
 using TermThing.Views;
+using TermThing.Diagnostics;
 
 namespace TermThing.Tmux;
 
@@ -415,7 +416,7 @@ public sealed class TmuxControlSession : IDisposable
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[tmux] sync failed: {ex.Message}");
+            Log.Warn("tmux", $"sync failed: {ex.Message}");
         }
         finally
         {
@@ -525,7 +526,7 @@ public sealed class TmuxControlSession : IDisposable
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[tmux] mode check for %{paneId} failed: {ex.Message}");
+            Log.Warn("tmux", $"mode check for %{paneId} failed: {ex.Message}");
         }
     }
 
@@ -579,7 +580,7 @@ public sealed class TmuxControlSession : IDisposable
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[tmux] restoring %{paneId} failed: {ex.Message}");
+            Log.Warn("tmux", $"restoring %{paneId} failed: {ex.Message}");
         }
         finally
         {
@@ -603,7 +604,7 @@ public sealed class TmuxControlSession : IDisposable
         try { layout = PaneLayout.ParseTmux(layoutString); }
         catch (FormatException ex)
         {
-            Debug.WriteLine($"[tmux] bad layout for @{id}: {ex.Message} ({layoutString})");
+            Log.Warn("tmux", $"bad layout for @{id}: {ex.Message} ({layoutString})");
             return null;
         }
 
@@ -686,7 +687,7 @@ public sealed class TmuxControlSession : IDisposable
         try { layout = PaneLayout.ParseTmux(layoutString); }
         catch (FormatException ex)
         {
-            Debug.WriteLine($"[tmux] bad layout for @{window.Id}: {ex.Message} ({layoutString})");
+            Log.Warn("tmux", $"bad layout for @{window.Id}: {ex.Message} ({layoutString})");
             return false;
         }
         int? zoomed = null;
