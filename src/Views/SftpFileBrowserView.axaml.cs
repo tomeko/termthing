@@ -295,10 +295,7 @@ public partial class SftpFileBrowserView : UserControl
         // a row is focused, which rarely holds (the app focuses the terminal).
         AddHandler(KeyDownEvent, OnPanelKeyDown, RoutingStrategies.Tunnel);
 
-        // Restore persisted column widths
-        RestoreColumnWidths();
-
-        // Persist column widths when they change (debounced via a timer per column)
+        // Persist hand-sized column widths (others fit their content on each listing)
         SubscribeColumnWidthPersistence();
 
         // Bookmark panel: restore persisted state and wire drag handlers
@@ -370,6 +367,8 @@ public partial class SftpFileBrowserView : UserControl
                 Entries.Clear();
                 foreach (var entry in listing)
                     Entries.Add(entry);
+
+                AutoFitColumns(listing);
 
                 if (keep is not null)
                     RestoreViewState(keep.Value);
@@ -577,7 +576,14 @@ public partial class SftpFileBrowserView : UserControl
         finally { _suppressMonitorEvents = false; }
     }
 
-    private void OnRefreshClicked(object? sender, RoutedEventArgs e) => Refresh();
+    /// <summary>User-initiated refresh (button, menu, F5): also re-fits the columns.</summary>
+    private void RefreshAndRefitColumns()
+    {
+        ResetColumnWidths();
+        Refresh();
+    }
+
+    private void OnRefreshClicked(object? sender, RoutedEventArgs e) => RefreshAndRefitColumns();
 
     /// <summary>
     /// Raised when the user clicks the SFTP browser's close (✕) button. The owning
@@ -1116,7 +1122,7 @@ public partial class SftpFileBrowserView : UserControl
     {
         if (e.Key == Key.F5)
         {
-            Refresh();
+            RefreshAndRefitColumns();
             e.Handled = true;
         }
     }
@@ -1125,7 +1131,7 @@ public partial class SftpFileBrowserView : UserControl
     {
         if (e.Key == Key.F5)
         {
-            Refresh();
+            RefreshAndRefitColumns();
             e.Handled = true;
         }
         else if (e.Key == Key.Delete)
@@ -1286,27 +1292,30 @@ public partial class SftpFileBrowserView : UserControl
     // Column width persistence
     // -----------------------------------------------------------------------
 
-    private void RestoreColumnWidths()
+    // Text shown by each resizable column, for measuring content widths.
+    private static readonly Dictionary<string, Func<SftpEntry, string>> ColumnText = new()
     {
-        var saved = SettingsService.Temp.SftpColumnWidths;
-        // Remove any stale pixel-width entries for star-sized columns
-        foreach (var col in _filesGrid.Columns)
-            if (col.Width.IsStar && col.Header is string h)
-                saved.Remove(h);
+        ["Name"]        = e => e.Name,
+        ["Size"]        = e => e.SizeDisplay,
+        ["Modified"]    = e => e.ModifiedDisplay,
+        ["Permissions"] = e => e.Permissions,
+        ["Owner"]       = e => e.OwnerDisplay,
+        ["Group"]       = e => e.GroupDisplay,
+    };
 
-        // Clamp saved widths against the column's MinWidth so stale tiny values
-        // (e.g. from when Name was a star column and got saved as a near-zero pixel)
-        // don't make a column invisible.
-        foreach (var col in _filesGrid.Columns)
-        {
-            if (col.Width.IsStar) continue;
-            if (col.Header is not string header) continue;
-            if (!saved.TryGetValue(header, out var w) || w <= 0) continue;
-            var minW = col.MinWidth > 0 ? col.MinWidth : 30;
-            col.Width = new DataGridLength(Math.Max(w, minW));
-        }
-    }
+    private const double CellTextPadding   = 28;  // cell text margin (12 + 12) plus slack
+    private const double HeaderTextPadding = 32;  // header padding plus the sort glyph
+    private const double MaxAutoColumnWidth = 480; // one absurd file name shouldn't eat the view
+    private const int    MeasureSampleSize  = 25;  // longest strings measured per column
 
+    // Width this view last assigned to each column. An ActualWidth that differs from
+    // it can only come from the user dragging the column edge.
+    private readonly Dictionary<DataGridColumn, double> _appliedColumnWidths = new();
+
+    /// <summary>
+    /// Columns size to their content on every listing, except those the user resized
+    /// by hand — those keep the user's width (persisted) until Refresh resets them.
+    /// </summary>
     private void SubscribeColumnWidthPersistence()
     {
         // Debounce: save at most 500 ms after the last resize event
@@ -1314,15 +1323,16 @@ public partial class SftpFileBrowserView : UserControl
 
         foreach (var col in _filesGrid.Columns)
         {
-            // Don't persist the filler star column
-            if (col.Width.IsStar) continue;
+            if (col.Header is not string header || !ColumnText.ContainsKey(header)) continue;
 
             col.PropertyChanged += (_, args) =>
             {
                 if (args.Property.Name != nameof(col.ActualWidth)) return;
-                if (col.Header is not string header) return;
+                if (!_appliedColumnWidths.TryGetValue(col, out var applied)) return;
+                if (Math.Abs(col.ActualWidth - applied) < 1) return;
 
-                SettingsService.Temp.SftpColumnWidths[header] = col.ActualWidth;
+                _appliedColumnWidths[col] = col.ActualWidth;
+                SettingsService.Temp.SftpUserColumnWidths[header] = col.ActualWidth;
 
                 debounce?.Stop();
                 debounce = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background,
@@ -1330,6 +1340,56 @@ public partial class SftpFileBrowserView : UserControl
                 debounce.Start();
             };
         }
+    }
+
+    private void AutoFitColumns(IReadOnlyList<SftpEntry> entries)
+    {
+        var user = SettingsService.Temp.SftpUserColumnWidths;
+        foreach (var col in _filesGrid.Columns)
+        {
+            if (col.Header is not string header || !ColumnText.TryGetValue(header, out var text)) continue;
+
+            var minW = col.MinWidth > 0 ? col.MinWidth : 30;
+            double width = user.TryGetValue(header, out var w) && w > 0
+                ? w
+                : MeasureColumn(col, header, entries.Select(text));
+            width = Math.Max(width, minW);
+
+            _appliedColumnWidths[col] = width;
+            col.Width = new DataGridLength(width);
+        }
+    }
+
+    private double MeasureColumn(DataGridColumn col, string header, IEnumerable<string> values)
+    {
+        var family = col is DataGridTextColumn t && t.IsSet(DataGridTextColumn.FontFamilyProperty)
+            ? t.FontFamily
+            : _filesGrid.FontFamily;
+        var typeface = new Typeface(family);
+        var size = _filesGrid.FontSize;
+
+        double Measure(string s) => new FormattedText(s, System.Globalization.CultureInfo.CurrentUICulture,
+            FlowDirection.LeftToRight, typeface, size, Brushes.Black).WidthIncludingTrailingWhitespace;
+
+        // Proportional fonts make character count a proxy, not a measure — measuring
+        // the longest few strings is exact enough and keeps huge folders cheap.
+        double content = values
+            .Where(v => !string.IsNullOrEmpty(v))
+            .OrderByDescending(v => v.Length)
+            .Take(MeasureSampleSize)
+            .Select(Measure)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        return Math.Min(MaxAutoColumnWidth, Math.Max(content + CellTextPadding, Measure(header) + HeaderTextPadding));
+    }
+
+    /// <summary>Forgets hand-sized column widths so the next listing fits every column.</summary>
+    private void ResetColumnWidths()
+    {
+        if (SettingsService.Temp.SftpUserColumnWidths.Count == 0) return;
+        SettingsService.Temp.SftpUserColumnWidths.Clear();
+        SettingsService.SaveTemp();
     }
 
     // -----------------------------------------------------------------------
