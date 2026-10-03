@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:views="clr-namespace:TermThing.Views"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
              x:Class="TermThing.Views.SftpFileBrowserView"
              Background="#1e1e1e">
     <UserControl.Styles>
@@ -11,20 +12,31 @@
         <Style Selector="DataGridRow.dropTarget">
             <Setter Property="Background" Value="#552196F3"/>
         </Style>
+        <Style Selector="Button.sftpHeaderButton">
+            <Setter Property="Width" Value="28"/>
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="4,0,0,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
     </UserControl.Styles>
 
     <DockPanel>
         <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto,Auto" Margin="4,4,4,2">
             <TextBox x:Name="PathBox" Grid.Column="0" FontSize="11" PlaceholderText="Path"
                      KeyDown="OnPathBoxKeyDown" VerticalAlignment="Center"/>
-            <Button x:Name="RefreshButton" Grid.Column="1" Content="⟳" FontSize="16"
-                    Padding="6,2" Margin="4,0,0,0" Click="OnRefreshClicked"
-                    ToolTip.Tip="Refresh (F5)"
-                    VerticalAlignment="Center"/>
-            <Button x:Name="CloseSftpButton" Grid.Column="2" Content="✕" FontSize="13"
-                    Padding="6,2" Margin="4,0,0,0" Click="OnCloseSftpClicked"
-                    ToolTip.Tip="Close SFTP browser for this session"
-                    VerticalAlignment="Center"/>
+            <!-- Icon buttons share one fixed size; Unicode glyphs here rendered at
+                 different sizes depending on each OS's fallback font. -->
+            <Button x:Name="RefreshButton" Grid.Column="1" Classes="sftpHeaderButton"
+                    Click="OnRefreshClicked" ToolTip.Tip="Refresh (F5)">
+                <materialIcons:MaterialIcon Kind="Refresh" Width="16" Height="16"/>
+            </Button>
+            <Button x:Name="CloseSftpButton" Grid.Column="2" Classes="sftpHeaderButton"
+                    Click="OnCloseSftpClicked" ToolTip.Tip="Close SFTP browser for this session">
+                <materialIcons:MaterialIcon Kind="Close" Width="16" Height="16"/>
+            </Button>
         </Grid>
 
         <StackPanel DockPanel.Dock="Bottom"
