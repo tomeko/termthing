@@ -172,15 +172,20 @@ public partial class SftpFileBrowserView : UserControl
         Path.Combine(Path.GetTempPath(), "termthing", "dragout");
 
     // Internal drag tracking — while a drag originated from THIS view is in flight,
-    // _internalDragSource holds the source entry. OnDrop checks this to distinguish
+    // _internalDragSources holds the source entries. OnDrop checks this to distinguish
     // an internal move-within-SFTP from an OS-level upload (file drag from desktop).
-    private SftpEntry? _internalDragSource;
+    private IReadOnlyList<SftpEntry>? _internalDragSources;
 
     // Set in the pointer-pressed tunnel handler when the user left-clicks the
     // row that was already the sole selected entry (no Shift/Ctrl). On pointer
     // release — if no drag started — we clear the selection so users can
     // toggle off a single highlight.
     private bool _clickedSoleSelectedItem;
+
+    // A bare press on a row inside a multi-selection keeps the selection, so the
+    // whole selection can be dragged. If no drag starts, the release collapses the
+    // selection to this row, as a plain click would have (Explorer/Finder behaviour).
+    private SftpEntry? _collapseSelectionOnRelease;
 
     private string? _lastTerminalDir;
 
@@ -349,6 +354,7 @@ public partial class SftpFileBrowserView : UserControl
             {
                 _dragOutPending     = null;
                 _dragOutPointerArgs = null;
+                _collapseSelectionOnRelease = null;
 
                 var listing = new List<SftpEntry>(files.Count + 1);
                 if (path != "/")
@@ -1466,7 +1472,7 @@ public partial class SftpFileBrowserView : UserControl
 
         // Internal drag (the drag originated from this same view) → treat as
         // a move, never show the big upload overlay.
-        bool isInternal = _internalDragSource != null;
+        bool isInternal = _internalDragSources != null;
         e.DragEffects = isInternal ? DragDropEffects.Move : DragDropEffects.Copy;
 
         var rowEntry = GetEntryUnderNameColumn(e.GetPosition(_filesGrid));
@@ -1489,51 +1495,74 @@ public partial class SftpFileBrowserView : UserControl
 
     /// <summary>
     /// Handles an internal SFTP drag-and-drop (a row was dragged within the same view).
-    /// Prompts the user for confirmation and renames (moves) the source on the server.
+    /// Prompts the user for confirmation and renames (moves) the sources on the server.
     /// </summary>
-    private async Task HandleInternalMoveAsync(SftpEntry src, string destDir)
+    private async Task HandleInternalMoveAsync(IReadOnlyList<SftpEntry> sources, string destDir)
     {
-        if (src.IsParentLink) return;
-
         var normalizedDest = destDir.TrimEnd('/');
         if (string.IsNullOrEmpty(normalizedDest)) normalizedDest = "/";
 
-        var srcParent = GetParentPath(src.FullPath);
-        if (srcParent == normalizedDest)
+        var toMove = new List<SftpEntry>();
+        string? skipReason = null;
+        foreach (var src in sources)
         {
-            SetStatus("Already in this folder.");
-            return;
+            if (src.IsParentLink) continue;
+
+            if (GetParentPath(src.FullPath) == normalizedDest)
+            {
+                skipReason ??= "Already in this folder.";
+                continue;
+            }
+
+            if (src.IsDirectory)
+            {
+                var srcPrefix = src.FullPath.TrimEnd('/') + "/";
+                if (normalizedDest == src.FullPath.TrimEnd('/') ||
+                    normalizedDest.StartsWith(srcPrefix, StringComparison.Ordinal))
+                {
+                    skipReason ??= $"Cannot move '{src.Name}' into itself.";
+                    continue;
+                }
+            }
+
+            toMove.Add(src);
         }
 
-        if (src.IsDirectory)
+        if (toMove.Count == 0)
         {
-            var srcPrefix = src.FullPath.TrimEnd('/') + "/";
-            if (normalizedDest == src.FullPath.TrimEnd('/') ||
-                normalizedDest.StartsWith(srcPrefix, StringComparison.Ordinal))
-            {
-                SetStatus($"Cannot move '{src.Name}' into itself.");
-                return;
-            }
+            if (skipReason != null) SetStatus(skipReason);
+            return;
         }
 
         var host = TopLevel.GetTopLevel(this) as Window;
         if (host == null) return;
 
-        var dialog = new MoveConfirmDialog(itemCount: 1, normalizedDest);
+        var dialog = new MoveConfirmDialog(itemCount: toMove.Count, normalizedDest);
         var confirmed = await dialog.ShowDialog<bool>(host);
         if (!confirmed) return;
 
-        var dstPath = normalizedDest.TrimEnd('/') + "/" + src.Name;
-        try
+        var failures = new List<string>();
+        foreach (var src in toMove)
         {
-            await Task.Run(() => _sftpClient.RenameFile(src.FullPath, dstPath));
-            Refresh();
-            SetStatus($"Moved '{src.Name}' to {normalizedDest}");
+            var dstPath = normalizedDest.TrimEnd('/') + "/" + src.Name;
+            try
+            {
+                await Task.Run(() => _sftpClient.RenameFile(src.FullPath, dstPath));
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{src.Name}: {ex.Message}");
+            }
         }
-        catch (Exception ex)
-        {
-            SetStatus($"Move failed: {ex.Message}");
-        }
+
+        Refresh();
+        int moved = toMove.Count - failures.Count;
+        if (failures.Count > 0)
+            SetStatus($"Move failed — {string.Join("; ", failures)}");
+        else
+            SetStatus(moved == 1
+                ? $"Moved '{toMove[0].Name}' to {normalizedDest}"
+                : $"Moved {moved} items to {normalizedDest}");
     }
 
     private async void OnMenuUploadFilesClicked(object? sender, RoutedEventArgs e)
@@ -1564,9 +1593,9 @@ public partial class SftpFileBrowserView : UserControl
         ClearUploadDragState();
 
         // Internal drag dropped back on this view → treat as a move, not an upload.
-        if (_internalDragSource is { } src)
+        if (_internalDragSources is { } sources)
         {
-            await HandleInternalMoveAsync(src, destDir);
+            await HandleInternalMoveAsync(sources, destDir);
             return;
         }
 
@@ -1900,6 +1929,7 @@ public partial class SftpFileBrowserView : UserControl
         _dragOutPending     = null;
         _dragOutPointerArgs = null;
         _clickedSoleSelectedItem = false;
+        _collapseSelectionOnRelease = null;
 
         var point = e.GetCurrentPoint(_filesGrid);
         if (!point.Properties.IsLeftButtonPressed) return;
@@ -1926,6 +1956,19 @@ public partial class SftpFileBrowserView : UserControl
         {
             _clickedSoleSelectedItem = true;
         }
+
+        // Bare press inside a multi-selection: keep the grid from collapsing the
+        // selection now, so the whole selection can be dragged. The grid never sees
+        // this press, so take the capture and focus it would have taken.
+        if (e.KeyModifiers == KeyModifiers.None
+            && _filesGrid.SelectedItems is { Count: > 1 } multi
+            && multi.Contains(entry))
+        {
+            _collapseSelectionOnRelease = entry;
+            e.Pointer.Capture(_filesGrid);
+            _filesGrid.Focus();
+            e.Handled = true;
+        }
     }
 
     private void OnFilesGridPointerMoved(object? sender, PointerEventArgs e)
@@ -1948,15 +1991,21 @@ public partial class SftpFileBrowserView : UserControl
         var dy   = pos.Y - _dragOutStartPos.Y;
         if (Math.Sqrt(dx * dx + dy * dy) < DragThresholdPx) return;
 
-        // Threshold exceeded — start the drag
+        // Threshold exceeded — start the drag. Dragging a selected row drags the whole
+        // selection; otherwise just the row under the press.
         var entry           = _dragOutPending;
         var pressedArgs     = _dragOutPointerArgs;
         _dragOutPending     = null;
         _dragOutPointerArgs = null;
+        _collapseSelectionOnRelease = null;
         _dragOutInProgress  = true;
         _dragOutReleased    = false;
 
-        _ = InitiateDragDownloadAsync(entry, pressedArgs ?? throw new InvalidOperationException("Pressed event args missing"));
+        IReadOnlyList<SftpEntry> entries = [entry];
+        if (_filesGrid.SelectedItems is { Count: > 1 } sel && sel.Contains(entry))
+            entries = sel.OfType<SftpEntry>().Where(i => !i.IsParentLink).ToList();
+
+        _ = InitiateDragDownloadAsync(entries, pressedArgs ?? throw new InvalidOperationException("Pressed event args missing"));
     }
 
     private bool IsCapturedByGrid(IPointer pointer)
@@ -1983,28 +2032,44 @@ public partial class SftpFileBrowserView : UserControl
             _filesGrid.SelectedItems?.Clear();
         }
         _clickedSoleSelectedItem = false;
+
+        // Press inside a multi-selection that didn't become a drag: now act as the
+        // plain click it was. We took the capture on press, so give it back.
+        if (_collapseSelectionOnRelease is { } only)
+        {
+            _collapseSelectionOnRelease = null;
+            if (IsCapturedByGrid(e.Pointer)) e.Pointer.Capture(null);
+            if (!_dragOutInProgress)
+            {
+                _filesGrid.SelectedItems?.Clear();
+                _filesGrid.SelectedItem = only;
+            }
+        }
     }
 
-    private async Task InitiateDragDownloadAsync(SftpEntry entry, PointerPressedEventArgs pointerArgs)
+    private async Task InitiateDragDownloadAsync(IReadOnlyList<SftpEntry> entries, PointerPressedEventArgs pointerArgs)
     {
-        _internalDragSource = entry;
+        if (entries.Count == 0) { _dragOutInProgress = false; return; }
+        _internalDragSources = entries;
+        bool anyDirectory = entries.Any(en => en.IsDirectory);
+        string what = entries.Count == 1 ? entries[0].FullPath : $"{entries.Count} items in {_currentPath}";
         try
         {
             // Windows fast path: a virtual-file (delayed-rendering) drag. The file's
             // bytes are pulled from SFTP only when the drop target asks for them — i.e.
             // on DROP — so the app doesn't freeze pre-downloading while the mouse is
-            // held. Single files only; directories fall through to the pre-download
-            // path below. DoDragDrop blocks (pumping messages) until the drag ends.
-            if (OperatingSystem.IsWindows() && !entry.IsDirectory)
+            // held. Files only; a selection with a directory falls through to the
+            // pre-download path below. DoDragDrop blocks (pumping messages) until the drag ends.
+            if (OperatingSystem.IsWindows() && !anyDirectory)
             {
                 bool started = false;
                 try
                 {
-                    var remotePath = entry.FullPath;
-                    started = WindowsFileDrag.TryDrag(entry.Name, entry.Size, () =>
+                    var files = entries.Select(en => (en.Name, en.Size)).ToList();
+                    started = WindowsFileDrag.TryDrag(files, index =>
                     {
                         using var ms = new MemoryStream();
-                        _sftpClient.DownloadFile(remotePath, ms);
+                        _sftpClient.DownloadFile(entries[index].FullPath, ms);
                         return ms.ToArray();
                     });
                 }
@@ -2018,42 +2083,43 @@ public partial class SftpFileBrowserView : UserControl
 
             // Folder drag-out on Windows would pre-download the whole tree while the mouse
             // is held, with no chance to confirm. Route it through Download to…, which does.
-            if (OperatingSystem.IsWindows() && entry.IsDirectory)
+            if (OperatingSystem.IsWindows() && anyDirectory)
             {
                 SetStatus("Dragging folders out isn't supported — right-click → Download to… instead.");
                 return;
             }
 
             SetStatus("Preparing download…");
-            Log.Info("sftp", $"Drag-out started: {entry.FullPath}{(entry.IsDirectory ? " (folder)" : "")}");
+            Log.Info("sftp", $"Drag-out started: {what}{(anyDirectory ? " (with folders)" : "")}");
 
-            // Download to a per-entry temp directory so the OS gets a real local file path
+            // Download to a per-drag temp directory so the OS gets real local file paths.
+            // The entries all come from one listing, so their names can't collide there.
             var sessionTemp = Path.Combine(DragOutTempRoot, Guid.NewGuid().ToString("N"));
             using var cts = new CancellationTokenSource();
             _dragOutCts = cts;
             if (_dragOutReleased) cts.Cancel();
 
-            string localPath;
+            List<string> localPaths;
             try
             {
-                localPath = await Task.Run(() =>
+                localPaths = await Task.Run(() =>
                 {
                     Directory.CreateDirectory(sessionTemp);
-                    return DownloadToTempSync(entry, sessionTemp,
+                    return entries.Select(en => DownloadToTempSync(en, sessionTemp,
                         msg => Dispatcher.UIThread.Post(() => { if (!cts.IsCancellationRequested) SetStatus(msg); }),
-                        cts.Token);
+                        cts.Token)).ToList();
                 });
             }
             catch (OperationCanceledException)
             {
-                Log.Info("sftp", $"Drag-out of {entry.FullPath} cancelled (button released while preparing)");
+                Log.Info("sftp", $"Drag-out of {what} cancelled (button released while preparing)");
                 SetStatus(null);
                 TryDeleteDirectory(sessionTemp);
                 return;
             }
             catch (Exception ex)
             {
-                Log.Warn("sftp", $"Drag-out download of {entry.FullPath} failed", ex);
+                Log.Warn("sftp", $"Drag-out download of {what} failed", ex);
                 SetStatus($"Drag-out download failed: {ex.Message}");
                 TryDeleteDirectory(sessionTemp);
                 return;
@@ -2079,19 +2145,28 @@ public partial class SftpFileBrowserView : UserControl
             // Directories resolve via TryGetFolderFromPathAsync — TryGetFileFromPathAsync
             // returns null for a folder, which previously made folder drag-out silently
             // do nothing after the tree had already been downloaded to temp.
-            IStorageItem? storageItem = entry.IsDirectory
-                ? await topLevel.StorageProvider.TryGetFolderFromPathAsync(new Uri(localPath))
-                : await topLevel.StorageProvider.TryGetFileFromPathAsync(new Uri(localPath));
-            if (storageItem is null) return;
-
             var transfer = new DataTransfer();
-            transfer.Add(DataTransferItem.CreateFile(storageItem));
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var localUri = new Uri(localPaths[i]);
+                IStorageItem? storageItem = entries[i].IsDirectory
+                    ? await topLevel.StorageProvider.TryGetFolderFromPathAsync(localUri)
+                    : await topLevel.StorageProvider.TryGetFileFromPathAsync(localUri);
+                if (storageItem is null)
+                {
+                    Log.Warn("sftp", $"Drag-out: no storage item for {localPaths[i]}");
+                    continue;
+                }
+                transfer.Add(DataTransferItem.CreateFile(storageItem));
+            }
+            if (transfer.Items.Count == 0) return;
+
             var effect = await DragDrop.DoDragDropAsync(pointerArgs, transfer, DragDropEffects.Copy);
-            Log.Info("sftp", $"Drag-out of {entry.FullPath} finished: {effect}");
+            Log.Info("sftp", $"Drag-out of {what} finished: {effect}");
         }
         finally
         {
-            _internalDragSource = null;
+            _internalDragSources = null;
             _dragOutInProgress = false;
         }
     }

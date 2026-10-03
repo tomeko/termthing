@@ -2,6 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Runtime.Versioning;
+using TermThing.Diagnostics;
 
 namespace TermThing.Sftp;
 
@@ -12,28 +13,28 @@ namespace TermThing.Sftp;
 /// them — i.e. on <b>drop</b>, not while the mouse is held. This avoids the freeze
 /// caused by pre-downloading a (possibly large) SFTP file before the drag begins.
 ///
-/// <para>Single-file only. Callers should fall back to a real-file drag for
-/// directories / multi-selection, and for non-Windows platforms.</para>
+/// <para>Files only. Callers should handle directories some other way, and use a
+/// real-file drag on non-Windows platforms.</para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal static class WindowsFileDrag
 {
     /// <summary>
-    /// Starts a synchronous OLE drag for a single virtual file. Blocks (pumping the
+    /// Starts a synchronous OLE drag for one or more virtual files. Blocks (pumping the
     /// OLE message loop) until the drag completes. <paramref name="readContent"/> is
-    /// invoked on drop to produce the file's bytes. Returns true if the drag was
+    /// invoked on drop with a file's index in <paramref name="files"/> to produce its bytes. Returns true if the drag was
     /// initiated (whether or not the user completed a drop); false if it could not be
     /// started (caller should fall back).
     /// </summary>
-    public static bool TryDrag(string fileName, long size, Func<byte[]> readContent)
+    public static bool TryDrag(IReadOnlyList<(string Name, long Size)> files, Func<int, byte[]> readContent)
     {
-        if (string.IsNullOrEmpty(fileName) || readContent is null) return false;
+        if (files.Count == 0 || files.Any(f => string.IsNullOrEmpty(f.Name)) || readContent is null) return false;
 
         // OLE must be initialised on this (STA UI) thread. Avalonia already does this;
         // calling again is harmless (returns S_FALSE).
         OleInitialize(IntPtr.Zero);
 
-        var data   = new VirtualFileDataObject(fileName, size, readContent);
+        var data   = new VirtualFileDataObject(files, readContent);
         var source = new DropSource();
 
         int hr = DoDragDrop(data, source, DROPEFFECT_COPY, out _);
@@ -46,71 +47,106 @@ internal static class WindowsFileDrag
     // IDataObject implementing FILEDESCRIPTOR + FILECONTENTS delayed rendering
     // -----------------------------------------------------------------------
 
-    private sealed class VirtualFileDataObject : IDataObject
+    /// <summary>
+    /// <c>IDataObject</c> with every method <c>[PreserveSig]</c>. The BCL's
+    /// <see cref="System.Runtime.InteropServices.ComTypes.IDataObject"/> declares
+    /// <c>GetData</c> etc. as <c>void</c>, so rejecting a format means throwing — and
+    /// Explorer probes dozens of formats during drag-over, each one a first-chance
+    /// exception the debugger breaks on. Returning HRESULTs avoids that entirely.
+    /// </summary>
+    [ComImport, Guid("0000010E-0000-0000-C000-000000000046"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IOleDataObject
+    {
+        [PreserveSig] int GetData(ref FORMATETC format, out STGMEDIUM medium);
+        [PreserveSig] int GetDataHere(ref FORMATETC format, ref STGMEDIUM medium);
+        [PreserveSig] int QueryGetData(ref FORMATETC format);
+        [PreserveSig] int GetCanonicalFormatEtc(ref FORMATETC formatIn, out FORMATETC formatOut);
+        [PreserveSig] int SetData(ref FORMATETC formatIn, ref STGMEDIUM medium,
+                                  [MarshalAs(UnmanagedType.Bool)] bool release);
+        [PreserveSig] int EnumFormatEtc(DATADIR direction, out IEnumFORMATETC? enumFormat);
+        [PreserveSig] int DAdvise(ref FORMATETC format, ADVF advf, IAdviseSink adviseSink, out int connection);
+        [PreserveSig] int DUnadvise(int connection);
+        [PreserveSig] int EnumDAdvise(out IEnumSTATDATA? enumAdvise);
+    }
+
+    private sealed class VirtualFileDataObject : IOleDataObject
     {
         private static readonly short CF_FILEDESCRIPTORW =
             (short)RegisterClipboardFormat("FileGroupDescriptorW");
         private static readonly short CF_FILECONTENTS =
             (short)RegisterClipboardFormat("FileContents");
 
-        private readonly string _fileName;
-        private readonly long   _size;
-        private readonly Func<byte[]> _readContent;
+        private readonly IReadOnlyList<(string Name, long Size)> _files;
+        private readonly Func<int, byte[]> _readContent;
 
-        public VirtualFileDataObject(string fileName, long size, Func<byte[]> readContent)
+        public VirtualFileDataObject(IReadOnlyList<(string Name, long Size)> files, Func<int, byte[]> readContent)
         {
-            _fileName    = fileName;
-            _size        = size;
+            _files       = files;
             _readContent = readContent;
         }
 
-        public void GetData(ref FORMATETC format, out STGMEDIUM medium)
+        // FILECONTENTS is requested per file by lindex; -1 is only unambiguous for one file.
+        private int ContentIndex(in FORMATETC format)
+            => format.lindex == -1 && _files.Count == 1 ? 0
+             : format.lindex >= 0 && format.lindex < _files.Count ? format.lindex
+             : -1;
+
+        public int GetData(ref FORMATETC format, out STGMEDIUM medium)
         {
             medium = default;
-            if ((format.tymed & TYMED.TYMED_HGLOBAL) == 0)
-                Marshal.ThrowExceptionForHR(DV_E_TYMED);
+            if ((format.tymed & TYMED.TYMED_HGLOBAL) == 0) return DV_E_TYMED;
 
             if (format.cfFormat == CF_FILEDESCRIPTORW)
             {
                 medium.tymed          = TYMED.TYMED_HGLOBAL;
                 medium.unionmember    = BuildFileGroupDescriptor();
                 medium.pUnkForRelease = null;
-                return;
+                return S_OK;
             }
 
-            if (format.cfFormat == CF_FILECONTENTS && format.lindex is 0 or -1)
+            if (format.cfFormat == CF_FILECONTENTS && ContentIndex(format) is var index and >= 0)
             {
-                var bytes = _readContent(); // produced on demand — i.e. on drop
+                byte[] bytes;
+                try { bytes = _readContent(index); } // produced on demand — i.e. on drop
+                catch (Exception ex)
+                {
+                    Log.Warn("sftp", "Drag-out download failed", ex);
+                    return E_FAIL;
+                }
                 medium.tymed          = TYMED.TYMED_HGLOBAL;
                 medium.unionmember    = BytesToHGlobal(bytes);
                 medium.pUnkForRelease = null;
-                return;
+                return S_OK;
             }
 
-            Marshal.ThrowExceptionForHR(DV_E_FORMATETC);
+            return DV_E_FORMATETC;
         }
 
         public int QueryGetData(ref FORMATETC format)
         {
             if ((format.tymed & TYMED.TYMED_HGLOBAL) == 0) return DV_E_TYMED;
             if (format.cfFormat == CF_FILEDESCRIPTORW) return S_OK;
-            if (format.cfFormat == CF_FILECONTENTS && format.lindex is 0 or -1) return S_OK;
+            if (format.cfFormat == CF_FILECONTENTS && ContentIndex(format) >= 0) return S_OK;
             return DV_E_FORMATETC;
         }
 
-        public IEnumFORMATETC EnumFormatEtc(DATADIR direction)
+        public int EnumFormatEtc(DATADIR direction, out IEnumFORMATETC? enumFormat)
         {
             if (direction != DATADIR.DATADIR_GET)
-                throw new NotImplementedException();
-            return new FormatEtcEnumerator(new[]
+            {
+                enumFormat = null;
+                return E_NOTIMPL;
+            }
+            enumFormat = new FormatEtcEnumerator(new[]
             {
                 MakeFormat(CF_FILEDESCRIPTORW, -1),
                 MakeFormat(CF_FILECONTENTS,     0),
             });
+            return S_OK;
         }
 
-        public void GetDataHere(ref FORMATETC format, ref STGMEDIUM medium)
-            => Marshal.ThrowExceptionForHR(E_NOTIMPL);
+        public int GetDataHere(ref FORMATETC format, ref STGMEDIUM medium) => E_NOTIMPL;
 
         public int GetCanonicalFormatEtc(ref FORMATETC formatIn, out FORMATETC formatOut)
         {
@@ -118,8 +154,9 @@ internal static class WindowsFileDrag
             return E_NOTIMPL;
         }
 
-        public void SetData(ref FORMATETC formatIn, ref STGMEDIUM medium, bool release)
-            => Marshal.ThrowExceptionForHR(E_NOTIMPL);
+        // Explorer calls SetData to hand back shell formats (drop description, performed
+        // effect, ...). Declining is fine; we'd have to free medium only on success.
+        public int SetData(ref FORMATETC formatIn, ref STGMEDIUM medium, bool release) => E_NOTIMPL;
 
         public int DAdvise(ref FORMATETC pFormatetc, ADVF advf, IAdviseSink adviseSink, out int connection)
         {
@@ -127,12 +164,11 @@ internal static class WindowsFileDrag
             return OLE_E_ADVISENOTSUPPORTED;
         }
 
-        public void DUnadvise(int connection)
-            => Marshal.ThrowExceptionForHR(OLE_E_ADVISENOTSUPPORTED);
+        public int DUnadvise(int connection) => OLE_E_ADVISENOTSUPPORTED;
 
-        public int EnumDAdvise(out IEnumSTATDATA enumAdvise)
+        public int EnumDAdvise(out IEnumSTATDATA? enumAdvise)
         {
-            enumAdvise = null!;
+            enumAdvise = null;
             return OLE_E_ADVISENOTSUPPORTED;
         }
 
@@ -147,24 +183,27 @@ internal static class WindowsFileDrag
 
         private IntPtr BuildFileGroupDescriptor()
         {
-            var fd = new FILEDESCRIPTORW
-            {
-                dwFlags          = FD_FILESIZE | FD_PROGRESSUI,
-                nFileSizeHigh    = (uint)(_size >> 32),
-                nFileSizeLow     = (uint)(_size & 0xFFFFFFFF),
-                cFileName        = new char[260],
-            };
-            var chars = _fileName.Length > 259 ? _fileName[..259] : _fileName;
-            chars.CopyTo(0, fd.cFileName, 0, chars.Length);
-
             int fdSize   = Marshal.SizeOf<FILEDESCRIPTORW>();
-            int total    = sizeof(uint) + fdSize; // cItems + one descriptor
+            int total    = sizeof(uint) + fdSize * _files.Count; // cItems + descriptors
             IntPtr hMem  = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)total);
             IntPtr ptr   = GlobalLock(hMem);
             try
             {
-                Marshal.WriteInt32(ptr, 1); // cItems = 1
-                Marshal.StructureToPtr(fd, ptr + sizeof(uint), false);
+                Marshal.WriteInt32(ptr, _files.Count); // cItems
+                for (int i = 0; i < _files.Count; i++)
+                {
+                    var (name, size) = _files[i];
+                    var fd = new FILEDESCRIPTORW
+                    {
+                        dwFlags          = FD_FILESIZE | FD_PROGRESSUI,
+                        nFileSizeHigh    = (uint)(size >> 32),
+                        nFileSizeLow     = (uint)(size & 0xFFFFFFFF),
+                        cFileName        = new char[260],
+                    };
+                    var chars = name.Length > 259 ? name[..259] : name;
+                    chars.CopyTo(0, fd.cFileName, 0, chars.Length);
+                    Marshal.StructureToPtr(fd, ptr + sizeof(uint) + fdSize * i, false);
+                }
             }
             finally { GlobalUnlock(hMem); }
             return hMem;
@@ -263,6 +302,7 @@ internal static class WindowsFileDrag
     private const int  S_OK        = 0;
     private const int  S_FALSE     = 1;
     private const int  E_NOTIMPL   = unchecked((int)0x80004001);
+    private const int  E_FAIL      = unchecked((int)0x80004005);
     private const int  DV_E_FORMATETC = unchecked((int)0x80040064);
     private const int  DV_E_TYMED     = unchecked((int)0x80040069);
     private const int  OLE_E_ADVISENOTSUPPORTED = unchecked((int)0x80040003);
@@ -280,7 +320,7 @@ internal static class WindowsFileDrag
     private static extern int OleInitialize(IntPtr pvReserved);
 
     [DllImport("ole32.dll")]
-    private static extern int DoDragDrop(IDataObject pDataObj, IDropSource pDropSource,
+    private static extern int DoDragDrop(IOleDataObject pDataObj, IDropSource pDropSource,
         int dwOKEffect, out int pdwEffect);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
