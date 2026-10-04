@@ -4,37 +4,25 @@
 
 <img src="doc/images/tt_ss2.png" style="width=50%"/>
 
-## Features
+# Features
 
-- **tmux api integration**
-  - native UX panes/windows/control through tmux api
-- **sftp browser**
-  - always on file explorer
+- **tmux api integration for native rendering/control**
+- **sftp browser built in**
 - **tabbed interface with floating windows**
-  - for those who aren't TUI obsessed
 - **text editor with syntax highlighting**
-  - quick edits
 - **docker monitor, tail log windows, portable JSON config**
 
-## Status
-It's a terminal emulator built by some random internet stranger. Don't assume this is battle-tested or comes with any warranty. That being said I built it for me and use it as a daily driver, among my many vibe-by-flight projects this isn't one of them.
-
-## Docs
-
-_todo_
+# Status
+It's a terminal emulator built by some random internet stranger. Don't assume this is battle-tested or comes with any warranty. That being said I built it for me and use it as a daily driver.
 
 ## Requirements
 
 - [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (for running)
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (for building from source)
 
-## Running
+## Installation
 
-Download the latest release and run the executable directly (Requires .NET 10 runtime)
-
-## Updating
-
-Built-in updater will notify/pull/update from github releases
+- Download the [latest release](https://github.com/tomeko/termthing/releases/latest) and run the executable directly (Requires .NET 10 runtime). Or build and run (see below)
 
 ## Building
 
@@ -46,14 +34,45 @@ cd termthing
 dotnet build src/TermThing.sln
 dotnet run --project src/TermThing.csproj
 ```
-## FAQ
+# Docs
 
-### Q. ???
+_todo, starting with the most non-obvious stuff below_
 
-### A. ...
+## Native vs tmux modes
+- Pane management can be done natively or in tmux mode
+- Native panes are just separate SSH sessions, tmux are actual panes/windows via api (tmux >= 3.2)
+  - Older tmux: falls back to "legacy" mode, the attach is typed into the shell, tmux draws its own UI inside a single terminal
+
+ Top right area shows you which mode you're in. Containts detach, close pane, split right, split down buttons
+
+<img src="doc/images/pane_mode.png" width="300px">
+<img src="doc/images/tmux_mode.png" width="300px">
+
+
+## Tmux mode
+
+- Attaching/detaching/spawning sessions is done with the tmux button in the session tab header (green if in tmux mode, see image below)
+- If there is more than one pane (split), when selected it'll have a blue border (for detach, further split)
+
+
+<img src="doc/images/tmux1.png" width="500px">
+
+- There's a subheader containing tmux windows (also create new, rename, etc. See image below)
+
+<img src="doc/images/tmux_window_subheader.png" width="500px">
+
+# Updating
+
+Built-in updater will notify/pull/update from github releases
+
+# FAQ
+
+## Q. ???
+
+## A. ...
 <img src="./doc/images/arnoldyeah.jpg" style="width: 200px">
 
-## Acknowledgements
+# Acknowledgements
 
 - [Iciclecreek.Avalonia.Terminal](https://github.com/tomlm/Iciclecreek.Avalonia.Terminal) by Tom Laird-McConnell: the terminal control powering every session. Really what makes this tick.
 - [SSH.NET](https://github.com/sshnet/SSH.NET): All stuff SSH
@@ -62,7 +81,7 @@ dotnet run --project src/TermThing.csproj
 - [Material.Icons.Avalonia](https://github.com/AvaloniaUtils/Material.Icons.Avalonia): Icons.
 - [Cascadia Code](https://github.com/microsoft/cascadia-code) and [Inter](https://rsms.me/inter/): Bundled fonts (SIL Open Font License 1.1).
 
-## License
+# License
 
 MIT: see [LICENSE](LICENSE).
 
